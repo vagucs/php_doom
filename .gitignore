@@ -1,0 +1,10 @@
+*.wad
+*.WAD
+/vendor/
+composer.lock
+doomsav*.json
+SDL2.dll
+libSDL2*.so*
+libSDL2*.dylib
+Thumbs.db
+.DS_Store
