@@ -2,6 +2,8 @@
 
 ![DOOM rodando em PHP CLI com SDL2](screenshot/doom.png)
 
+**Vídeo:** [DOOM rodando em PHP](https://youtu.be/aCOHFTD1D8M)
+
 DOOM generic portado de Harbour para **PHP 8.1+ CLI + SDL2** (FFI). Não é aplicação web.
 
 Por **Wagner Nunes da Silva**
@@ -151,6 +153,19 @@ ffi.enable=true
 Opcional: `composer install` só para o autoload PSR-4. `src/autoload.php` funciona sem Composer.
 
 SDL2: coloque **SDL2.dll** (64 bits) em `lib/` no Windows, ou defina `SDL2_PATH`. Veja `lib/README.txt`.
+
+---
+
+## Desempenho
+
+Taxa típica de desenho no mesmo PC (320×200, janela, IWAD shareware). O jogo continua em 35 Hz (`TICRATE`); `-fps` mostra esse número.
+
+| Port | FPS típico |
+|---|---|
+| Harbour (`doom_hb`) | ~12 |
+| Python (`doom_python`) | ~8 |
+| PHP (`php_doom`) | ~20 |
+| Node (`node_doom`) | ~100 |
 
 ---
 
