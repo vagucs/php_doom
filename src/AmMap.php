@@ -457,8 +457,10 @@ final class AmMap
     {
         foreach ($shape as [$ax, $ay, $bx, $by]) {
             if ($scale !== 0) {
-                $ax = Compat::fixedMul($scale, $ax); $ay = Compat::fixedMul($scale, $ay);
-                $bx = Compat::fixedMul($scale, $bx); $by = Compat::fixedMul($scale, $by);
+                $ax = Compat::fixedMul($scale, $ax);
+                $ay = Compat::fixedMul($scale, $ay);
+                $bx = Compat::fixedMul($scale, $bx);
+                $by = Compat::fixedMul($scale, $by);
             }
             if ($angle !== 0) {
                 [$ax, $ay] = $this->rotate($ax, $ay, $angle);
@@ -482,13 +484,17 @@ final class AmMap
     /** @param array<int,int> $fb */
     private function line(array &$fb, int $ax, int $ay, int $bx, int $by, int $color): void
     {
-        $x0 = $this->cx($ax); $y0 = $this->cy($ay);
-        $x1 = $this->cx($bx); $y1 = $this->cy($by);
+        $x0 = $this->cx($ax);
+        $y0 = $this->cy($ay);
+        $x1 = $this->cx($bx);
+        $y1 = $this->cy($by);
         if (!$this->clip($x0, $y0, $x1, $y1)) {
             return;
         }
-        $dx = abs($x1 - $x0); $sx = $x0 < $x1 ? 1 : -1;
-        $dy = -abs($y1 - $y0); $sy = $y0 < $y1 ? 1 : -1;
+        $dx = abs($x1 - $x0);
+        $sx = $x0 < $x1 ? 1 : -1;
+        $dy = -abs($y1 - $y0);
+        $sy = $y0 < $y1 ? 1 : -1;
         $error = $dx + $dy;
         while (true) {
             $this->put($fb, $x0, $y0, $color);
@@ -496,8 +502,14 @@ final class AmMap
                 break;
             }
             $twice = 2 * $error;
-            if ($twice >= $dy) { $error += $dy; $x0 += $sx; }
-            if ($twice <= $dx) { $error += $dx; $y0 += $sy; }
+            if ($twice >= $dy) {
+                $error += $dy;
+                $x0 += $sx;
+            }
+            if ($twice <= $dx) {
+                $error += $dx;
+                $y0 += $sy;
+            }
         }
     }
 
@@ -508,15 +520,35 @@ final class AmMap
                 | ($y < 0 ? 8 : ($y >= Defs::SCREENHEIGHT - Defs::SBARHEIGHT ? 4 : 0));
         };
         for ($i = 0; $i < 8; ++$i) {
-            $a = $code($x0, $y0); $b = $code($x1, $y1);
-            if (($a | $b) === 0) return true;
-            if (($a & $b) !== 0) return false;
+            $a = $code($x0, $y0);
+            $b = $code($x1, $y1);
+            if (($a | $b) === 0) {
+                return true;
+            }
+            if (($a & $b) !== 0) {
+                return false;
+            }
             $out = $a ?: $b;
-            if ($out & 8) { $x = $x0 + intdiv(($x1 - $x0) * -$y0, $y1 - $y0 ?: 1); $y = 0; }
-            elseif ($out & 4) { $y = $this->fH - 1; $x = $x0 + intdiv(($x1 - $x0) * ($y - $y0), $y1 - $y0 ?: 1); }
-            elseif ($out & 2) { $x = $this->fW - 1; $y = $y0 + intdiv(($y1 - $y0) * ($x - $x0), $x1 - $x0 ?: 1); }
-            else { $x = 0; $y = $y0 + intdiv(($y1 - $y0) * -$x0, $x1 - $x0 ?: 1); }
-            if ($out === $a) { $x0 = $x; $y0 = $y; } else { $x1 = $x; $y1 = $y; }
+            if ($out & 8) {
+                $x = $x0 + intdiv(($x1 - $x0) * -$y0, $y1 - $y0 ?: 1);
+                $y = 0;
+            } elseif ($out & 4) {
+                $y = $this->fH - 1;
+                $x = $x0 + intdiv(($x1 - $x0) * ($y - $y0), $y1 - $y0 ?: 1);
+            } elseif ($out & 2) {
+                $x = $this->fW - 1;
+                $y = $y0 + intdiv(($y1 - $y0) * ($x - $x0), $x1 - $x0 ?: 1);
+            } else {
+                $x = 0;
+                $y = $y0 + intdiv(($y1 - $y0) * -$x0, $x1 - $x0 ?: 1);
+            }
+            if ($out === $a) {
+                $x0 = $x;
+                $y0 = $y;
+            } else {
+                $x1 = $x;
+                $y1 = $y;
+            }
         }
         return false;
     }

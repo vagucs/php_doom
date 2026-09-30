@@ -42,17 +42,24 @@ final class Finale
         $this->game = $game;
         $commercial = $game->wad->checkNumForName('MAP01') >= 0;
         if ($commercial) {
-            $this->text = self::C1; $this->flat = 'SLIME16'; $game->sound->changeMusic('read_m', true);
+            $this->text = self::C1;
+            $this->flat = 'SLIME16';
+            $game->sound->changeMusic('read_m', true);
         } else {
             $this->text = [1 => self::E1, 2 => self::E2, 3 => self::E3][$game->episode] ?? self::E1;
             $this->flat = [1 => 'FLOOR4_8', 2 => 'SFLR6_1', 3 => 'MFLR8_4', 4 => 'MFLR8_3'][$game->episode] ?? 'FLOOR4_8';
             $game->sound->changeMusic('victor', true);
         }
         $this->flatLump = $this->lump($this->flat);
-        $art = match ($game->episode) { 2 => 'VICTORY2', 4 => 'ENDPIC', default => $this->has('CREDIT') ? 'CREDIT' : 'HELP2' };
+        $art = match ($game->episode) {
+            2 => 'VICTORY2',
+            4 => 'ENDPIC',
+            default => $this->has('CREDIT') ? 'CREDIT' : 'HELP2',
+        };
         $this->art = $this->lump($art) ?? $this->lump('HELP1');
         if ($game->episode === 3 && !$commercial) {
-            $this->pfub1 = $this->lump('PFUB1'); $this->pfub2 = $this->lump('PFUB2');
+            $this->pfub1 = $this->lump('PFUB1');
+            $this->pfub2 = $this->lump('PFUB2');
         }
     }
 
@@ -60,8 +67,12 @@ final class Finale
     {
         ++$this->count;
         if ($this->stage === self::TEXT && $this->count > strlen($this->text) * self::TEXT_SPEED + self::TEXT_WAIT) {
-            $this->stage = self::ART; $this->count = 0; $this->game->forceWipe = true;
-            if ($this->game->episode === 3) $this->game->sound->changeMusic('bunny', true);
+            $this->stage = self::ART;
+            $this->count = 0;
+            $this->game->forceWipe = true;
+            if ($this->game->episode === 3) {
+                $this->game->sound->changeMusic('bunny', true);
+            }
         } elseif ($this->stage === self::ART && $this->wantSkip() && $this->count > 10) {
             $this->done = true;
         }
@@ -74,7 +85,8 @@ final class Finale
             if ($this->game->episode === 3 && $this->pfub1 !== null && $this->pfub2 !== null) {
                 $this->drawBunny($fb);
             } elseif ($this->art !== null) {
-                VVideo::fill($fb, 0); VVideo::drawPatch($fb, 0, 0, $this->art);
+                VVideo::fill($fb, 0);
+                VVideo::drawPatch($fb, 0, 0, $this->art);
             }
             return;
         }
@@ -82,25 +94,45 @@ final class Finale
         $shown = intdiv($this->count, self::TEXT_SPEED);
         $x = $y = 10;
         foreach (str_split($this->text) as $i => $char) {
-            if ($i >= $shown) break;
-            if ($char === "\n") { $x = 10; $y += 11; continue; }
+            if ($i >= $shown) {
+                break;
+            }
+            if ($char === "\n") {
+                $x = 10;
+                $y += 11;
+                continue;
+            }
             $code = ord(strtoupper($char));
-            if ($char === ' ' || $code < Defs::HU_FONTSTART || $code > Defs::HU_FONTEND) { $x += 4; continue; }
+            if ($char === ' ' || $code < Defs::HU_FONTSTART || $code > Defs::HU_FONTEND) {
+                $x += 4;
+                continue;
+            }
             $patch = $this->lump(sprintf('STCFN%03d', $code));
-            if ($patch === null) { $x += 4; continue; }
+            if ($patch === null) {
+                $x += 4;
+                continue;
+            }
             [$width] = VVideo::patchSize($patch);
-            if ($x + $width > Defs::SCREENWIDTH) break;
-            VVideo::drawPatch($fb, $x, $y, $patch); $x += $width;
+            if ($x + $width > Defs::SCREENWIDTH) {
+                break;
+            }
+            VVideo::drawPatch($fb, $x, $y, $patch);
+            $x += $width;
         }
     }
 
     /** @param array<int,int> $fb */
     private function fillFlat(array &$fb): void
     {
-        if ($this->flatLump === null || strlen($this->flatLump) < 4096) { VVideo::fill($fb, 0); return; }
+        if ($this->flatLump === null || strlen($this->flatLump) < 4096) {
+            VVideo::fill($fb, 0);
+            return;
+        }
         for ($y = 0; $y < Defs::SCREENHEIGHT; ++$y) {
             $row = ($y & 63) << 6;
-            for ($x = 0; $x < Defs::SCREENWIDTH; ++$x) $fb[$y * Defs::SCREENWIDTH + $x] = ord($this->flatLump[$row + ($x & 63)]);
+            for ($x = 0; $x < Defs::SCREENWIDTH; ++$x) {
+                $fb[$y * Defs::SCREENWIDTH + $x] = ord($this->flatLump[$row + ($x & 63)]);
+            }
         }
     }
 
@@ -113,34 +145,63 @@ final class Finale
             $column = $x + $scroll;
             $this->drawPatchColumn($fb, $x, $column < 320 ? $this->pfub2 : $this->pfub1, $column < 320 ? $column : $column - 320);
         }
-        if ($this->count < 1130) return;
+        if ($this->count < 1130) {
+            return;
+        }
         $stage = $this->count < 1180 ? 0 : min(6, intdiv($this->count - 1180, 5));
-        if ($stage > $this->lastBunnyStage) { $this->game->sound->play('pistol'); $this->lastBunnyStage = $stage; }
+        if ($stage > $this->lastBunnyStage) {
+            $this->game->sound->play('pistol');
+            $this->lastBunnyStage = $stage;
+        }
         $patch = $this->lump("END{$stage}");
-        if ($patch !== null) VVideo::drawPatch($fb, intdiv(320 - 104, 2), intdiv(200 - 64, 2), $patch);
+        if ($patch !== null) {
+            VVideo::drawPatch($fb, intdiv(320 - 104, 2), intdiv(200 - 64, 2), $patch);
+        }
     }
 
     /** @param array<int,int> $fb */
     private function drawPatchColumn(array &$fb, int $x, string $patch, int $column): void
     {
-        if ($column < 0) return;
+        if ($column < 0) {
+            return;
+        }
         $offsetPos = 8 + $column * 4;
-        if ($offsetPos + 4 > strlen($patch)) return;
+        if ($offsetPos + 4 > strlen($patch)) {
+            return;
+        }
         $offset = unpack('V', substr($patch, $offsetPos, 4))[1];
         while ($offset < strlen($patch) && ord($patch[$offset]) !== 255) {
-            $top = ord($patch[$offset]); $length = ord($patch[$offset + 1]); $source = $offset + 3;
-            for ($i = 0; $i < $length && $top + $i < 200; ++$i) $fb[($top + $i) * 320 + $x] = ord($patch[$source + $i]);
+            $top = ord($patch[$offset]);
+            $length = ord($patch[$offset + 1]);
+            $source = $offset + 3;
+            for ($i = 0; $i < $length && $top + $i < 200; ++$i) {
+                $fb[($top + $i) * 320 + $x] = ord($patch[$source + $i]);
+            }
             $offset += $length + 4;
         }
     }
 
     private function wantSkip(): bool
     {
-        if ($this->game->menu?->active) return false;
-        foreach ([Keys::LCTRL,Keys::RCTRL,Keys::SPACE,Keys::RETURN,Keys::KP_ENTER,ord('e')] as $key)
-            if (isset($this->game->keys[$key])) return true;
+        if ($this->game->menu?->active) {
+            return false;
+        }
+        foreach ([Keys::LCTRL, Keys::RCTRL, Keys::SPACE, Keys::RETURN, Keys::KP_ENTER, ord('e')] as $key) {
+            if (isset($this->game->keys[$key])) {
+                return true;
+            }
+        }
         return false;
     }
-    private function has(string $name): bool { return $this->game->wad->checkNumForName($name) >= 0; }
-    private function lump(string $name): ?string { $n = $this->game->wad->checkNumForName($name); return $n < 0 ? null : $this->game->wad->cacheLumpNum($n); }
+
+    private function has(string $name): bool
+    {
+        return $this->game->wad->checkNumForName($name) >= 0;
+    }
+
+    private function lump(string $name): ?string
+    {
+        $n = $this->game->wad->checkNumForName($name);
+        return $n < 0 ? null : $this->game->wad->cacheLumpNum($n);
+    }
 }

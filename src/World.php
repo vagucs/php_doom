@@ -217,19 +217,28 @@ final class World
             $ln = new Line();
             $ln->v1 = $this->vertexes[Bin::i16($data, $o)];
             $ln->v2 = $this->vertexes[Bin::i16($data, $o + 2)];
-            $ln->dx = $ln->v2->x - $ln->v1->x; $ln->dy = $ln->v2->y - $ln->v1->y;
-            $ln->flags = Bin::i16($data, $o + 4); $ln->special = Bin::i16($data, $o + 6); $ln->tag = Bin::i16($data, $o + 8);
-            $s0 = Bin::i16($data, $o + 10); $s1 = Bin::i16($data, $o + 12);
+            $ln->dx = $ln->v2->x - $ln->v1->x;
+            $ln->dy = $ln->v2->y - $ln->v1->y;
+            $ln->flags = Bin::i16($data, $o + 4);
+            $ln->special = Bin::i16($data, $o + 6);
+            $ln->tag = Bin::i16($data, $o + 8);
+            $s0 = Bin::i16($data, $o + 10);
+            $s1 = Bin::i16($data, $o + 12);
             $ln->sidenum = [$s0, $s1];
             $ln->sides = [$s0 >= 0 ? $this->sides[$s0] : null, $s1 >= 0 ? $this->sides[$s1] : null];
-            $ln->frontsector = $ln->sides[0]?->sector; $ln->backsector = $ln->sides[1]?->sector;
+            $ln->frontsector = $ln->sides[0]?->sector;
+            $ln->backsector = $ln->sides[1]?->sector;
             $ln->bbox[Defs::BOXLEFT] = min($ln->v1->x, $ln->v2->x);
             $ln->bbox[Defs::BOXRIGHT] = max($ln->v1->x, $ln->v2->x);
             $ln->bbox[Defs::BOXBOTTOM] = min($ln->v1->y, $ln->v2->y);
             $ln->bbox[Defs::BOXTOP] = max($ln->v1->y, $ln->v2->y);
             $ln->iLine = $i;
-            if ($ln->frontsector !== null) $ln->frontsector->lines[] = $ln;
-            if ($ln->backsector !== null && $ln->backsector !== $ln->frontsector) $ln->backsector->lines[] = $ln;
+            if ($ln->frontsector !== null) {
+                $ln->frontsector->lines[] = $ln;
+            }
+            if ($ln->backsector !== null && $ln->backsector !== $ln->frontsector) {
+                $ln->backsector->lines[] = $ln;
+            }
             $this->lines[] = $ln;
         }
     }
@@ -239,10 +248,12 @@ final class World
         $this->segs = [];
         for ($o = 0, $n = strlen($data); $o + Defs::MAPSEG_SIZE <= $n; $o += Defs::MAPSEG_SIZE) {
             $s = new Seg();
-            $s->v1 = $this->vertexes[Bin::i16($data, $o)]; $s->v2 = $this->vertexes[Bin::i16($data, $o + 2)];
+            $s->v1 = $this->vertexes[Bin::i16($data, $o)];
+            $s->v2 = $this->vertexes[Bin::i16($data, $o + 2)];
             $s->angle = Compat::asU32(Bin::i16($data, $o + 4) << 16);
             $s->linedef = $this->lines[Bin::i16($data, $o + 6)];
-            $side = Bin::i16($data, $o + 8); $s->offset = Bin::i16($data, $o + 10) * Defs::FRACUNIT;
+            $side = Bin::i16($data, $o + 8);
+            $s->offset = Bin::i16($data, $o + 10) * Defs::FRACUNIT;
             $s->sidedef = $s->linedef->sides[$side] ?? $s->linedef->sides[0];
             $s->frontsector = $s->sidedef?->sector;
             $s->backsector = ($s->linedef->flags & Defs::ML_TWOSIDED) ? ($s->linedef->sides[$side ^ 1]?->sector) : null;
@@ -263,11 +274,19 @@ final class World
         $this->nodes = [];
         for ($o = 0, $n = strlen($data); $o + Defs::MAPNODE_SIZE <= $n; $o += Defs::MAPNODE_SIZE) {
             $nd = new Node();
-            $nd->x = Bin::i16($data, $o) * Defs::FRACUNIT; $nd->y = Bin::i16($data, $o + 2) * Defs::FRACUNIT;
-            $nd->dx = Bin::i16($data, $o + 4) * Defs::FRACUNIT; $nd->dy = Bin::i16($data, $o + 6) * Defs::FRACUNIT;
-            $p = $o + 8; $nd->bbox = [];
+            $nd->x = Bin::i16($data, $o) * Defs::FRACUNIT;
+            $nd->y = Bin::i16($data, $o + 2) * Defs::FRACUNIT;
+            $nd->dx = Bin::i16($data, $o + 4) * Defs::FRACUNIT;
+            $nd->dy = Bin::i16($data, $o + 6) * Defs::FRACUNIT;
+            $p = $o + 8;
+            $nd->bbox = [];
             for ($child = 0; $child < 2; ++$child, $p += 8) {
-                $nd->bbox[] = [Bin::i16($data, $p) * Defs::FRACUNIT, Bin::i16($data, $p + 2) * Defs::FRACUNIT, Bin::i16($data, $p + 4) * Defs::FRACUNIT, Bin::i16($data, $p + 6) * Defs::FRACUNIT];
+                $nd->bbox[] = [
+                    Bin::i16($data, $p) * Defs::FRACUNIT,
+                    Bin::i16($data, $p + 2) * Defs::FRACUNIT,
+                    Bin::i16($data, $p + 4) * Defs::FRACUNIT,
+                    Bin::i16($data, $p + 6) * Defs::FRACUNIT,
+                ];
             }
             $nd->children = [Bin::u16($data, $p), Bin::u16($data, $p + 2)];
             $this->nodes[] = $nd;
@@ -278,21 +297,35 @@ final class World
     {
         $this->things = [];
         for ($o = 0, $n = strlen($data); $o + Defs::MAPTHING_SIZE <= $n; $o += Defs::MAPTHING_SIZE) {
-            $this->things[] = new MapThing(Bin::i16($data, $o), Bin::i16($data, $o + 2), Bin::i16($data, $o + 4), Bin::i16($data, $o + 6), Bin::i16($data, $o + 8));
+            $this->things[] = new MapThing(
+                Bin::i16($data, $o),
+                Bin::i16($data, $o + 2),
+                Bin::i16($data, $o + 4),
+                Bin::i16($data, $o + 6),
+                Bin::i16($data, $o + 8),
+            );
         }
     }
 
     private function loadBlockmap(string $data): void
     {
         $this->blockmaplump = $data;
-        if (strlen($data) < 8) return;
-        $this->bmaporgx = Bin::i16($data, 0) * Defs::FRACUNIT; $this->bmaporgy = Bin::i16($data, 2) * Defs::FRACUNIT;
-        $this->bmapwidth = Bin::i16($data, 4); $this->bmapheight = Bin::i16($data, 6);
+        if (strlen($data) < 8) {
+            return;
+        }
+        $this->bmaporgx = Bin::i16($data, 0) * Defs::FRACUNIT;
+        $this->bmaporgy = Bin::i16($data, 2) * Defs::FRACUNIT;
+        $this->bmapwidth = Bin::i16($data, 4);
+        $this->bmapheight = Bin::i16($data, 6);
     }
 
     public function playerStart(): ?MapThing
     {
-        foreach ($this->things as $thing) if ($thing->type === 1) return $thing;
+        foreach ($this->things as $thing) {
+            if ($thing->type === 1) {
+                return $thing;
+            }
+        }
         return $this->things[0] ?? null;
     }
 }

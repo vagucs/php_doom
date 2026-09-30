@@ -120,33 +120,45 @@ final class Saveg
         $thinkers = [];
         if ($game->specials !== null) {
             foreach ($game->specials->thinkers as $thinker) {
-                if ($thinker->dead ?? false) continue;
+                if ($thinker->dead ?? false) {
+                    continue;
+                }
                 $sector = array_search($thinker->sector ?? null, $world->sectors, true);
-                if ($sector === false) continue;
+                if ($sector === false) {
+                    continue;
+                }
                 if ($thinker instanceof VerticalDoor) {
-                    $thinkers[] = self::record($thinker, 'door', $sector, ['type','direction','topheight','speed','topwait','topcountdown']);
+                    $thinkers[] = self::record($thinker, 'door', $sector, ['type', 'direction', 'topheight', 'speed', 'topwait', 'topcountdown']);
                 } elseif ($thinker instanceof Plat) {
-                    $thinkers[] = self::record($thinker, 'plat', $sector, ['type','status','speed','low','high','wait','count']);
+                    $thinkers[] = self::record($thinker, 'plat', $sector, ['type', 'status', 'speed', 'low', 'high', 'wait', 'count']);
                 } elseif ($thinker instanceof FloorMove) {
-                    $thinkers[] = self::record($thinker, 'floor', $sector, ['direction','dest','speed']);
+                    $thinkers[] = self::record($thinker, 'floor', $sector, ['direction', 'dest', 'speed']);
                 }
             }
         }
         $buttons = [];
         foreach ($game->specials?->buttons ?? [] as $button) {
             $buttons[] = [
-                'line' => $button->line->iLine ?? -1, 'where' => $button->where,
-                'texture' => $button->texture, 'timer' => $button->timer,
+                'line' => $button->line->iLine ?? -1,
+                'where' => $button->where,
+                'texture' => $button->texture,
+                'timer' => $button->timer,
             ];
         }
         return [
-            'episode' => $game->episode, 'mapn' => $game->mapn, 'skill' => $game->skill,
-            'leveltime' => $game->leveltime, 'player' => $dump($game->player, self::PLAYER_FIELDS),
-            'sectors' => array_map(fn($s) => $dump($s, ['floorheight','ceilingheight','floorpic','ceilingpic','lightlevel','special']), $world->sectors),
-            'sides' => array_map(fn($s) => $dump($s, ['textureoffset','rowoffset','toptexture','bottomtexture','midtexture']), $world->sides),
-            'lines' => array_map(fn($l) => ['flags' => $l->flags, 'special' => $l->special], $world->lines),
-            'mobjs' => $mobjRecords, 'thinkers' => $thinkers, 'buttons' => $buttons,
-            'totalkills' => $game->totalkills, 'totalitems' => $game->totalitems,
+            'episode' => $game->episode,
+            'mapn' => $game->mapn,
+            'skill' => $game->skill,
+            'leveltime' => $game->leveltime,
+            'player' => $dump($game->player, self::PLAYER_FIELDS),
+            'sectors' => array_map(fn ($s) => $dump($s, ['floorheight', 'ceilingheight', 'floorpic', 'ceilingpic', 'lightlevel', 'special']), $world->sectors),
+            'sides' => array_map(fn ($s) => $dump($s, ['textureoffset', 'rowoffset', 'toptexture', 'bottomtexture', 'midtexture']), $world->sides),
+            'lines' => array_map(fn ($l) => ['flags' => $l->flags, 'special' => $l->special], $world->lines),
+            'mobjs' => $mobjRecords,
+            'thinkers' => $thinkers,
+            'buttons' => $buttons,
+            'totalkills' => $game->totalkills,
+            'totalitems' => $game->totalitems,
             'totalsecret' => $game->totalsecret,
         ];
     }
@@ -155,7 +167,9 @@ final class Saveg
     private static function record(object $object, string $kind, int $sector, array $fields): array
     {
         $record = ['kind' => $kind, 'sector' => $sector];
-        foreach ($fields as $field) $record[$field] = $object->{$field};
+        foreach ($fields as $field) {
+            $record[$field] = $object->{$field};
+        }
         return $record;
     }
 
@@ -176,16 +190,20 @@ final class Saveg
         self::restoreList($world->sectors, $state['sectors'] ?? []);
         self::restoreList($world->sides, $state['sides'] ?? []);
         self::restoreList($world->lines, $state['lines'] ?? []);
-        foreach ($world->sectors as $sector) $sector->specialdata = null;
+        foreach ($world->sectors as $sector) {
+            $sector->specialdata = null;
+        }
 
         $thinkers = [];
         foreach ($state['thinkers'] ?? [] as $record) {
             $sector = $world->sectors[(int) $record['sector']] ?? null;
-            if ($sector === null) continue;
+            if ($sector === null) {
+                continue;
+            }
             $thinker = match ($record['kind'] ?? '') {
-                'door' => new VerticalDoor($sector, (int)$record['type'], (int)$record['direction'], (int)$record['topheight'], (int)$record['speed'], (int)$record['topwait'], (int)$record['topcountdown']),
-                'plat' => new Plat($sector, (int)$record['type'], (int)$record['status'], (int)$record['speed'], (int)$record['low'], (int)$record['high'], (int)$record['wait'], (int)$record['count']),
-                'floor' => new FloorMove($sector, (int)$record['direction'], (int)$record['dest'], (int)$record['speed']),
+                'door' => new VerticalDoor($sector, (int) $record['type'], (int) $record['direction'], (int) $record['topheight'], (int) $record['speed'], (int) $record['topwait'], (int) $record['topcountdown']),
+                'plat' => new Plat($sector, (int) $record['type'], (int) $record['status'], (int) $record['speed'], (int) $record['low'], (int) $record['high'], (int) $record['wait'], (int) $record['count']),
+                'floor' => new FloorMove($sector, (int) $record['direction'], (int) $record['dest'], (int) $record['speed']),
                 default => null,
             };
             if ($thinker !== null) {
@@ -198,7 +216,7 @@ final class Saveg
         foreach ($state['buttons'] ?? [] as $record) {
             $line = $world->lines[(int) $record['line']] ?? null;
             if ($line !== null) {
-                $game->specials->buttons[] = new Button($line, $record['where'], (int)$record['texture'], (int)$record['timer']);
+                $game->specials->buttons[] = new Button($line, $record['where'], (int) $record['texture'], (int) $record['timer']);
             }
         }
 
@@ -206,21 +224,29 @@ final class Saveg
         foreach ($state['mobjs'] ?? [] as $record) {
             $mobj = new Mobj();
             foreach (self::MOBJ_FIELDS as $field) {
-                if (array_key_exists($field, $record)) $mobj->{$field} = $record[$field];
+                if (array_key_exists($field, $record)) {
+                    $mobj->{$field} = $record[$field];
+                }
             }
-            if (isset($record['info']) && is_array($record['info'])) $mobj->info = $record['info'];
+            if (isset($record['info']) && is_array($record['info'])) {
+                $mobj->info = $record['info'];
+            }
             $mobjs[] = $mobj;
         }
         foreach ($mobjs as $i => $mobj) {
             $target = $state['mobjs'][$i]['target'] ?? null;
-            if (is_int($target) && isset($mobjs[$target])) $mobj->target = $mobjs[$target];
+            if (is_int($target) && isset($mobjs[$target])) {
+                $mobj->target = $mobjs[$target];
+            }
         }
         $game->player = null;
         foreach ($mobjs as $i => $mobj) {
             if ($state['mobjs'][$i]['isPlayer'] ?? false) {
                 $player = new Player($mobj);
                 foreach (self::PLAYER_FIELDS as $field) {
-                    if (array_key_exists($field, $state['player'] ?? [])) $player->{$field} = $state['player'][$field];
+                    if (array_key_exists($field, $state['player'] ?? [])) {
+                        $player->{$field} = $state['player'][$field];
+                    }
                 }
                 $mobj->player = $player;
                 $mobj->health = $player->health;
@@ -228,7 +254,9 @@ final class Saveg
                 break;
             }
         }
-        if ($game->player === null) throw new \RuntimeException('save has no player');
+        if ($game->player === null) {
+            throw new \RuntimeException('save has no player');
+        }
         $world->mobjs = $mobjs;
         $game->gamestate = Defs::GS_LEVEL;
         $game->sound->playLevelMusic($game->episode, $game->mapn);
@@ -237,8 +265,12 @@ final class Saveg
     private static function restoreList(array $objects, array $records): void
     {
         foreach ($records as $i => $record) {
-            if (!isset($objects[$i])) break;
-            foreach ($record as $field => $value) $objects[$i]->{$field} = $value;
+            if (!isset($objects[$i])) {
+                break;
+            }
+            foreach ($record as $field => $value) {
+                $objects[$i]->{$field} = $value;
+            }
         }
     }
 }
