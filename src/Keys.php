@@ -22,6 +22,7 @@ final class Keys
     public const SPACE = 32;
     public const BACKSPACE = 8;
 
+    public const F1 = 0x4000003A;
     public const F2 = 0x4000003D;
     public const F3 = 0x4000003E;
     public const F11 = 0x40000044;

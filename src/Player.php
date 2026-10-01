@@ -64,7 +64,9 @@ final class Player
     public bool $usedown = false;
     public int $damagecount = 0;
     public int $bonuscount = 0;
+    public ?Mobj $attacker = null;
     public int $extralight = 0;
+    public int $fixedcolormap = 0;
     public int $refire = 0;
     public int $killcount = 0;
     public int $itemcount = 0;
@@ -78,6 +80,8 @@ final class Player
     public string $pspriteBody = '';
     public string $pspriteFlash = '';
     public int $flashTics = 0;
+    /** @var int[] */
+    public array $powers = [0, 0, 0, 0, 0, 0];
 
     public function __construct(?Mobj $mo = null, int $cheats = 0)
     {
@@ -88,8 +92,46 @@ final class Player
 
     public function setMessage(string $text): void
     {
-        $this->message = $text;
+        $this->message = Deh::string($text);
         $this->messageTics = 4 * Defs::TICRATE;
+    }
+
+    public static function givePower(self $p, int $power): bool
+    {
+        if ($power === Defs::PW_INVULNERABILITY) {
+            $p->powers[$power] = Defs::INVULNTICS;
+            return true;
+        }
+        if ($power === Defs::PW_INVISIBILITY) {
+            $p->powers[$power] = Defs::INVISTICS;
+            if ($p->mo !== null) {
+                $p->mo->flags |= Defs::MF_SHADOW;
+            }
+            return true;
+        }
+        if ($power === Defs::PW_INFRARED) {
+            $p->powers[$power] = Defs::INFRATICS;
+            return true;
+        }
+        if ($power === Defs::PW_IRONFEET) {
+            $p->powers[$power] = Defs::IRONTICS;
+            return true;
+        }
+        if ($power === Defs::PW_STRENGTH) {
+            if ($p->health < Defs::MAXHEALTH) {
+                $p->health = min(Defs::MAXHEALTH, $p->health + 100);
+                if ($p->mo !== null) {
+                    $p->mo->health = $p->health;
+                }
+            }
+            $p->powers[$power] = 1;
+            return true;
+        }
+        if ($p->powers[$power]) {
+            return false;
+        }
+        $p->powers[$power] = 1;
+        return true;
     }
 
     public static function spawnPlayer(World $world, MapThing $start, int $cheats = 0): self
@@ -100,11 +142,18 @@ final class Player
         $mo = new Mobj(x: $x, y: $y, z: $sec->floorheight, angle: Compat::asU32(intdiv($start->angle, 45) * 0x20000000), floorz: $sec->floorheight, ceilingz: $sec->ceilingheight);
         $p = new self($mo, $cheats);
         $mo->player = $p;
+        $deh = Deh::get();
+        $p->health = $deh->initialHealth;
+        $mo->health = $deh->initialHealth;
+        $p->ammo = [$deh->initialBullets, 0, 0, 0];
+        $p->maxammo = $deh->maxammo;
         if ($cheats & 1) {
             $mo->flags |= Defs::MF_NOCLIP;
         }
         $p->viewz = $mo->z + Defs::VIEWHEIGHT;
+        $mo->lastlook = Enemy::publicRandom() % 4;
         $world->mobjs[] = $mo;
+        Collision::setThingPosition($world, $mo);
         return $p;
     }
 
@@ -146,31 +195,12 @@ final class Player
 
     public static function xyMovement(World $world, Mobj $mo, object $game): void
     {
-        if ($mo->momx === 0 && $mo->momy === 0) {
-            return;
-        }
-        Collision::slideMove($world, $mo, $mo->momx, $mo->momy, $game);
-        if ($mo->player && abs($mo->momx) < Defs::STOPSPEED && abs($mo->momy) < Defs::STOPSPEED && $mo->player->cmd->forwardmove === 0 && $mo->player->cmd->sidemove === 0) {
-            $mo->momx = $mo->momy = 0;
-            return;
-        }
-        $mo->momx = Compat::fixedMul($mo->momx, Defs::FRICTION);
-        $mo->momy = Compat::fixedMul($mo->momy, Defs::FRICTION);
+        Enemy::pXyMovement($world, $mo, $game);
     }
 
-    public static function zMovement(Mobj $mo): void
+    public static function zMovement(Mobj $mo, World $world, object $game): void
     {
-        $mo->z += $mo->momz;
-        if ($mo->z <= $mo->floorz) {
-            $mo->z = $mo->floorz;
-            $mo->momz = 0;
-        } else {
-            $mo->momz -= Defs::GRAVITY;
-        }
-        if ($mo->z + $mo->height > $mo->ceilingz) {
-            $mo->z = $mo->ceilingz - $mo->height;
-            $mo->momz = 0;
-        }
+        Enemy::mobjZ($mo, $world, $game);
     }
 
     private static function specialSector(World $world, self $p, object $game, int $time): void
@@ -185,12 +215,54 @@ final class Player
             $sec->special = 0;
             return;
         }
-        if (in_array($sec->special, [5, 7, 4, 16, 11], true) && (($time & 0x1f) === 0)) {
+        if (in_array($sec->special, [5, 7, 4, 16, 11], true)) {
+            if ($p->powers[Defs::PW_IRONFEET]) {
+                return;
+            }
+            if (($time & 0x1f) === 0) {
             $damage = $sec->special === 7 ? 5 : ($sec->special === 5 ? 10 : 20);
             $game->damageMobj($mo, null, $damage);
             if ($sec->special === 11 && $p->health <= 10 && $game->specials) {
                 $game->specials->exitRequested = true;
             }
+            }
+        }
+    }
+
+    private static function deathThink(World $world, self $p, object $game, int $leveltime): void
+    {
+        $mo = $p->mo;
+        $cmd = $p->cmd;
+        if ($p->viewheight > 6 * Defs::FRACUNIT) {
+            $p->viewheight -= Defs::FRACUNIT;
+        }
+        if ($p->viewheight < 6 * Defs::FRACUNIT) {
+            $p->viewheight = 6 * Defs::FRACUNIT;
+        }
+        $p->deltaviewheight = 0;
+        self::xyMovement($world, $mo, $game);
+        self::zMovement($mo, $world, $game);
+        self::calcHeight($p, $leveltime);
+        if ($p->attacker !== null && $p->attacker !== $mo) {
+            $angle = Collision::angleTo($mo->x, $mo->y, $p->attacker->x, $p->attacker->y);
+            $delta = Compat::asU32($angle - $mo->angle);
+            $ang5 = intdiv(Defs::ANG90, 18);
+            if ($delta < Compat::asU32($ang5) || $delta > Compat::asU32(-$ang5)) {
+                $mo->angle = $angle;
+                if ($p->damagecount) {
+                    --$p->damagecount;
+                }
+            } elseif ($delta < Compat::asU32(Defs::ANG180)) {
+                $mo->angle = Compat::asU32($mo->angle + $ang5);
+            } else {
+                $mo->angle = Compat::asU32($mo->angle - $ang5);
+            }
+        } elseif ($p->damagecount) {
+            --$p->damagecount;
+        }
+        self::weaponThink($p, $game);
+        if ($cmd->buttons & Defs::BT_USE) {
+            $p->playerstate = Defs::PST_REBORN;
         }
     }
 
@@ -199,16 +271,7 @@ final class Player
         $mo = $p->mo;
         $cmd = $p->cmd;
         if ($p->playerstate === Defs::PST_DEAD) {
-            if ($p->viewheight > 6 * Defs::FRACUNIT) {
-                $p->viewheight -= Defs::FRACUNIT;
-            }
-            self::calcHeight($p, $leveltime);
-            if ($cmd->buttons & Defs::BT_USE) {
-                $p->playerstate = Defs::PST_LIVE;
-                $p->health = $mo->health = 100;
-                $mo->alive = true;
-                $mo->flags |= Defs::MF_SHOOTABLE | Defs::MF_SOLID;
-            }
+            self::deathThink($world, $p, $game, $leveltime);
             return;
         }
         $mo->angle = Compat::asU32($mo->angle + ($cmd->angleturn << 16));
@@ -221,7 +284,7 @@ final class Player
             }
         }
         self::xyMovement($world, $mo, $game);
-        self::zMovement($mo);
+        self::zMovement($mo, $world, $game);
         self::calcHeight($p, $leveltime);
         self::specialSector($world, $p, $game, $leveltime);
         if ($cmd->buttons & Defs::BT_USE) {
@@ -239,6 +302,33 @@ final class Player
             }
         }
         self::weaponThink($p, $game);
+        if ($p->powers[Defs::PW_STRENGTH]) {
+            ++$p->powers[Defs::PW_STRENGTH];
+        }
+        if ($p->powers[Defs::PW_INVULNERABILITY]) {
+            --$p->powers[Defs::PW_INVULNERABILITY];
+        }
+        if ($p->powers[Defs::PW_INVISIBILITY]) {
+            --$p->powers[Defs::PW_INVISIBILITY];
+            if ($p->powers[Defs::PW_INVISIBILITY] === 0 && $p->mo !== null) {
+                $p->mo->flags &= ~Defs::MF_SHADOW;
+            }
+        }
+        if ($p->powers[Defs::PW_INFRARED]) {
+            --$p->powers[Defs::PW_INFRARED];
+        }
+        if ($p->powers[Defs::PW_IRONFEET]) {
+            --$p->powers[Defs::PW_IRONFEET];
+        }
+        $inv = $p->powers[Defs::PW_INVULNERABILITY];
+        $ir = $p->powers[Defs::PW_INFRARED];
+        if ($inv) {
+            $p->fixedcolormap = ($inv > 4 * 32 || ($inv & 8) !== 0) ? Defs::INVERSECOLORMAP : 0;
+        } elseif ($ir) {
+            $p->fixedcolormap = ($ir > 4 * 32 || ($ir & 8) !== 0) ? 1 : 0;
+        } else {
+            $p->fixedcolormap = 0;
+        }
         if ($p->damagecount) {
             --$p->damagecount;
         }
@@ -287,14 +377,19 @@ final class Player
 
     private static function weaponThink(self $p, object $game): void
     {
+        if ($p->playerstate === Defs::PST_DEAD || $p->health <= 0) {
+            self::lowerWeapon($p, $game);
+            return;
+        }
         $firing = (bool) ($p->cmd->buttons & Defs::BT_ATTACK);
         $ammoMap = self::weaponAmmo();
         $ammo = $ammoMap[$p->readyweapon] ?? null;
-        $can = $ammo === null || $p->ammo[$ammo] > 0;
+        $need = self::ammoNeeded($p->readyweapon);
+        $can = $ammo === null || $p->ammo[$ammo] >= $need;
         if (!$can) {
             foreach ([Defs::WP_PISTOL, Defs::WP_SHOTGUN, Defs::WP_CHAINGUN, Defs::WP_MISSILE, Defs::WP_PLASMA, Defs::WP_BFG, Defs::WP_FIST] as $w) {
                 $a = $ammoMap[$w] ?? null;
-                if ($p->weaponowned[$w] && ($a === null || $p->ammo[$a] > 0)) {
+                if ($p->weaponowned[$w] && ($a === null || $p->ammo[$a] >= self::ammoNeeded($w))) {
                     $p->pendingweapon = $w;
                     break;
                 }
@@ -360,6 +455,9 @@ final class Player
             return;
         }
         $p->pspriteSy = Sprites::WEAPONBOTTOM;
+        if ($p->playerstate === Defs::PST_DEAD || $p->health <= 0) {
+            return;
+        }
         if ($p->pendingweapon !== Defs::WP_NOCHANGE) {
             $p->readyweapon = $p->pendingweapon;
             $p->pendingweapon = Defs::WP_NOCHANGE;
@@ -452,52 +550,99 @@ final class Player
         }
     }
 
+    private static function ammoNeeded(int $weapon): int
+    {
+        return $weapon === Defs::WP_BFG ? Deh::get()->bfgCellsPerShot : 1;
+    }
+
+    /** P_GunShot. */
+    private static function gunShot(self $p, object $game, bool $accurate): bool
+    {
+        $mo = $p->mo;
+        $slope = Collision::bulletSlope($game->world, $mo);
+        $damage = 5 * ((Enemy::publicRandom() % 3) + 1);
+        $angle = $mo->angle;
+        if (!$accurate) {
+            $angle = Compat::asU32($angle + (Enemy::publicRandom() - Enemy::publicRandom()) * 262144);
+        }
+        return Collision::lineAttack($game->world, $mo, $damage, $game, Defs::MISSILERANGE, $angle, $slope);
+    }
+
     private static function doShot(self $p, object $game, ?int $ammo): void
     {
+        $need = self::ammoNeeded($p->readyweapon);
         if ($ammo !== null) {
-            if ($p->ammo[$ammo] <= 0) {
+            if ($p->ammo[$ammo] < $need) {
                 return;
             }
-            --$p->ammo[$ammo];
+            $p->ammo[$ammo] -= $need;
         }
-        $shots = [
-            Defs::WP_FIST => [2, Defs::MELEERANGE, null],
-            Defs::WP_CHAINSAW => [3, Defs::MELEERANGE, 'sawful'],
-            Defs::WP_PISTOL => [5, Defs::MISSILERANGE, 'pistol'],
-            Defs::WP_SHOTGUN => [7, Defs::MISSILERANGE, 'shotgn'],
-            Defs::WP_SUPERSHOTGUN => [8, Defs::MISSILERANGE, 'dshtgn'],
-            Defs::WP_CHAINGUN => [5, Defs::MISSILERANGE, 'pistol'],
-            Defs::WP_MISSILE => [20, Defs::MISSILERANGE, 'rlaunc'],
-            Defs::WP_PLASMA => [5, Defs::MISSILERANGE, 'plasma'],
-            Defs::WP_BFG => [100, Defs::MISSILERANGE, 'bfg'],
-        ];
-        [$dmg, $range, $sfx] = $shots[$p->readyweapon] ?? [5, Defs::MISSILERANGE, 'pistol'];
+        $mo = $p->mo;
+        $weapon = $p->readyweapon;
         $hit = false;
-        if ($p->mo) {
-            $pellets = $p->readyweapon === Defs::WP_SHOTGUN ? 7 : ($p->readyweapon === Defs::WP_SUPERSHOTGUN ? 20 : 1);
-            $shot = $dmg * (($game->leveltime & 7) + 1);
-            if ($p->readyweapon === Defs::WP_CHAINSAW) {
-                $shot = 2 * (($game->leveltime % 10) + 1);
-                $range = Defs::MELEERANGE + 1;
+        if ($mo && in_array($weapon, [Defs::WP_MISSILE, Defs::WP_PLASMA, Defs::WP_BFG], true)) {
+            if ($weapon === Defs::WP_PLASMA) {
+                $plasma = Enemy::publicRandom() & 1;
+                unset($plasma);
             }
-            for ($i = 0; $i < $pellets; ++$i) {
-                if (Collision::lineAttack($game->world, $p->mo, $shot, $game, $range)) {
-                    $hit = true;
-                }
+            if ($weapon === Defs::WP_MISSILE) {
+                Enemy::spawnPlayerMissile($game->world, $mo, 'MISL', 20 * Defs::FRACUNIT, 20, 'rocket');
+                $game->startSound('rlaunc');
+            } elseif ($weapon === Defs::WP_PLASMA) {
+                Enemy::spawnPlayerMissile($game->world, $mo, 'PLSS', 25 * Defs::FRACUNIT, 5, 'plasma');
+                $game->startSound('plasma');
+            } else {
+                Enemy::spawnPlayerMissile($game->world, $mo, 'BFS1', 25 * Defs::FRACUNIT, 100, 'bfg');
+                $game->startSound('bfg');
             }
+            ++$p->refire;
+            $p->attackdown = true;
+            Enemy::noiseAlert($game->world, $mo, $game);
+            return;
         }
-        if ($p->readyweapon === Defs::WP_CHAINSAW) {
-            $game->startSound($hit ? 'sawhit' : 'sawful');
-        } elseif ($p->readyweapon === Defs::WP_FIST) {
+        if ($mo && $weapon === Defs::WP_FIST) {
+            $damage = ((Enemy::publicRandom() % 10) + 1) * 2;
+            if ($p->powers[Defs::PW_STRENGTH]) {
+                $damage *= 10;
+            }
+            $angle = Compat::asU32($mo->angle + (Enemy::publicRandom() - Enemy::publicRandom()) * 262144);
+            $hit = Collision::lineAttack($game->world, $mo, $damage, $game, Defs::MELEERANGE, $angle);
             if ($hit) {
                 $game->startSound('punch');
             }
-        } elseif ($sfx) {
-            $game->startSound($sfx);
+        } elseif ($mo && $weapon === Defs::WP_CHAINSAW) {
+            $damage = 2 * ((Enemy::publicRandom() % 10) + 1);
+            $angle = Compat::asU32($mo->angle + (Enemy::publicRandom() - Enemy::publicRandom()) * 262144);
+            $hit = Collision::lineAttack($game->world, $mo, $damage, $game, Defs::MELEERANGE + 1, $angle);
+            $game->startSound($hit ? 'sawhit' : 'sawful');
+        } elseif ($mo && $weapon === Defs::WP_SHOTGUN) {
+            $game->startSound('shotgn');
+            for ($i = 0; $i < 7; ++$i) {
+                if (self::gunShot($p, $game, false)) {
+                    $hit = true;
+                }
+            }
+        } elseif ($mo && $weapon === Defs::WP_SUPERSHOTGUN) {
+            $game->startSound('dshtgn');
+            $slope = Collision::bulletSlope($game->world, $mo);
+            for ($i = 0; $i < 20; ++$i) {
+                $damage = 5 * ((Enemy::publicRandom() % 3) + 1);
+                $angle = Compat::asU32($mo->angle + (Enemy::publicRandom() - Enemy::publicRandom()) * 524288);
+                $pellet = $slope + (Enemy::publicRandom() - Enemy::publicRandom()) * 32;
+                if (Collision::lineAttack($game->world, $mo, $damage, $game, Defs::MISSILERANGE, $angle, $pellet)) {
+                    $hit = true;
+                }
+            }
+            unset($slope);
+        } elseif ($mo) {
+            $game->startSound('pistol');
+            self::gunShot($p, $game, $p->refire === 0);
         }
         ++$p->refire;
         $p->attackdown = true;
-        Enemy::noiseAlert($game->world, $p->mo, $game);
+        if ($mo) {
+            Enemy::noiseAlert($game->world, $mo, $game);
+        }
     }
 
     public static function currentWeaponPatch(self $p): string

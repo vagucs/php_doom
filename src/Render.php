@@ -120,6 +120,7 @@ final class Renderer
     public int $viewcos = 0;
     public int $viewsin = 0;
     public int $extralight = 0;
+    public string $fixedcolormap = '';
     private mixed $curline = null;
     private mixed $frontsector = null;
     private mixed $backsector = null;
@@ -378,7 +379,7 @@ final class Renderer
         return 64 * Defs::FRACUNIT;
     }
 
-    public function setupFrame(int $x, int $y, int $z, int $angle, int $extraLight = 0): void
+    public function setupFrame(int $x, int $y, int $z, int $angle, int $extraLight = 0, int $fixedcolormap = 0): void
     {
         $this->viewx = $x;
         $this->viewy = $y;
@@ -387,6 +388,7 @@ final class Renderer
         $this->viewsin = Tables::fineSin($this->viewangle);
         $this->viewcos = Tables::fineCos($this->viewangle);
         $this->extralight = $extraLight;
+        $this->fixedcolormap = $fixedcolormap ? $this->res->colormap($fixedcolormap) : '';
         $ang = Compat::ushr(Compat::asU32($this->viewangle - Defs::ANG90), Defs::ANGLETOFINESHIFT)
             & Defs::FINEMASK;
         $this->basexscale = Compat::fixedDiv(
@@ -899,7 +901,7 @@ final class Renderer
                     Defs::FRACBITS
                 );
                 $index = min(Defs::MAXLIGHTSCALE - 1, Compat::ushr($this->rw_scale, Defs::LIGHTSCALESHIFT));
-                $this->dc_colormap = $this->res->colormap($this->walllights[$index]);
+                $this->dc_colormap = $this->fixedcolormap !== '' ? $this->fixedcolormap : $this->res->colormap($this->walllights[$index]);
                 $this->dc_x = $this->rw_x;
                 $this->dc_iscale = $this->rw_scale !== 0 ? intdiv(0xFFFFFFFF, $this->rw_scale) : 0;
             }
@@ -1052,7 +1054,7 @@ final class Renderer
             }
             $index = $spryscale > 0 ? Compat::ushr($spryscale, Defs::LIGHTSCALESHIFT) : 0;
             $index = min(Defs::MAXLIGHTSCALE - 1, $index);
-            $this->dc_colormap = $this->res->colormap($walllights[$index]);
+            $this->dc_colormap = $this->fixedcolormap !== '' ? $this->fixedcolormap : $this->res->colormap($walllights[$index]);
             $this->dc_x = $x;
             $this->dc_iscale = $spryscale !== 0 ? intdiv(0xFFFFFFFF, $spryscale) : 0;
             $this->dc_texturemid = $texturemid;
@@ -1157,7 +1159,7 @@ final class Renderer
                     );
                     $yfrac = -$this->viewy - Compat::fixedMul(Tables::$finesine[$ang], $length);
                     $index = min(Defs::MAXLIGHTZ - 1, Compat::ushr($distance, Defs::LIGHTZSHIFT));
-                    $cm = $this->res->colormap($planezlight[$index]);
+                    $cm = $this->fixedcolormap !== '' ? $this->fixedcolormap : $this->res->colormap($planezlight[$index]);
                     $spot = (($xfrac >> 16) & 63) | (($yfrac >> 10) & 0x0FC0);
                     $source = $spot < strlen($flat) ? ord($flat[$spot]) : 0;
                     $pix = ord($cm[$source]);

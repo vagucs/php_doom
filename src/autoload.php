@@ -35,10 +35,12 @@ spl_autoload_register(static function (string $class): void {
         'Plat' => 'Specials.php',
         'FloorMove' => 'Specials.php',
         'CeilingMove' => 'Specials.php',
+        'LightThinker' => 'Specials.php',
         'Button' => 'Specials.php',
         'MenuItem' => 'Menu.php',
         'MenuDef' => 'Menu.php',
         'MoveCheck' => 'Collision.php',
+        'DivLine' => 'Collision.php',
         'Lump' => 'Wad.php',
         'Vertex' => 'World.php',
         'Sector' => 'World.php',
@@ -48,6 +50,7 @@ spl_autoload_register(static function (string $class): void {
         'Subsector' => 'World.php',
         'Node' => 'World.php',
         'MapThing' => 'World.php',
+        'CheatSeq' => 'Deh.php',
     ];
     $file = $aliases[$relative] ?? ($relative . '.php');
     $path = __DIR__ . DIRECTORY_SEPARATOR . str_replace('\\', DIRECTORY_SEPARATOR, $file);

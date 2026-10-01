@@ -41,6 +41,11 @@ final class Sprites
 
     private const MINZ = 4 * Defs::FRACUNIT;
     private const MAX_SPRITE_FRAMES = 29;
+    private const FUZZ_DIR = [
+        1, -1, 1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, -1, 1, 1, 1, -1, -1, -1, -1, 1, -1, -1, 1,
+        1, 1, 1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, -1, -1, -1, 1, 1, 1, 1, -1, 1, 1, -1, 1,
+    ];
+    private static int $fuzzPos = 0;
 
     /**
      * R_InitSpriteDefs: parse S_START..S_END, including mirrored POSSA2A8 lumps.
@@ -156,7 +161,7 @@ final class Sprites
         if (!$frames) {
             return null;
         }
-        $frameIndex = $frame & 31;
+        $frameIndex = $frame & Info::FF_FRAMEMASK;
         if ($frameIndex >= count($frames)) {
             return null;
         }
@@ -447,9 +452,14 @@ final class Sprites
         for ($column = 0; $column < max(1, $patchWidth); ++$column) {
             $columnOffsets[$column] = Bin::u32($patch, 8 + $column * 4);
         }
-        $colormap = $renderer->res->colormap(0);
+        $colormap = $renderer->fixedcolormap !== '' ? $renderer->fixedcolormap : $renderer->res->colormap(0);
+        $fuzz = isset($sprite['mo']) && ((($sprite['mo']->flags ?? 0) & Defs::MF_SHADOW) !== 0);
+        if ($fuzz) {
+            $colormap = $renderer->res->colormap(6);
+        }
         $patchLength = strlen($patch);
         $frac = $sprite['startfrac'];
+        $fbLen = count($fb);
         for ($x = $sprite['x1']; $x <= $sprite['x2']; ++$x) {
             $columnNumber = $frac >> Defs::FRACBITS;
             if ($columnNumber >= 0 && $columnNumber < $patchWidth) {
@@ -467,6 +477,10 @@ final class Sprites
                     $yh = ($bottomScreen - 1) >> Defs::FRACBITS;
                     $yl = max($yl, $clipTop[$x] + 1, 0);
                     $yh = min($yh, $clipBottom[$x] - 1, $renderer->viewheight - 1);
+                    if ($fuzz) {
+                        $yl = max($yl, 1);
+                        $yh = min($yh, $renderer->viewheight - 2);
+                    }
                     if ($yl <= $yh) {
                         $texfrac = Compat::fixedMul(
                             ($yl << Defs::FRACBITS) - $topScreen,
@@ -474,17 +488,34 @@ final class Sprites
                         );
                         $texfrac = max(0, $texfrac);
                         for ($y = $yl; $y <= $yh; ++$y) {
-                            $index = $texfrac >> Defs::FRACBITS;
-                            if ($index >= 0 && $index < $length) {
-                                $pixel = ord($patch[$source + $index]);
+                            if ($fuzz) {
+                                $dest = $renderer->ylookup[$y] + $renderer->columnofs[
+                                    $renderer->detailshift !== 0 ? ($x << 1) : $x
+                                ];
+                                $src = $dest + self::FUZZ_DIR[self::$fuzzPos] * Defs::SCREENWIDTH;
+                                self::$fuzzPos = (self::$fuzzPos + 1) % count(self::FUZZ_DIR);
+                                if ($src < 0 || $src >= $fbLen) {
+                                    $src = $dest;
+                                }
+                                $pixel = $fb[$src] & 255;
                                 $value = $pixel < strlen($colormap) ? ord($colormap[$pixel]) : $pixel;
-                                if ($renderer->detailshift !== 0) {
-                                    $xx = $x << 1;
-                                    $offset = $renderer->ylookup[$y] + $renderer->columnofs[$xx];
-                                    $fb[$offset] = $value;
-                                    $fb[$offset + 1] = $value;
-                                } else {
-                                    $fb[$renderer->ylookup[$y] + $renderer->columnofs[$x]] = $value;
+                                $fb[$dest] = $value;
+                                if ($renderer->detailshift !== 0 && $dest + 1 < $fbLen) {
+                                    $fb[$dest + 1] = $value;
+                                }
+                            } else {
+                                $index = $texfrac >> Defs::FRACBITS;
+                                if ($index >= 0 && $index < $length) {
+                                    $pixel = ord($patch[$source + $index]);
+                                    $value = $pixel < strlen($colormap) ? ord($colormap[$pixel]) : $pixel;
+                                    if ($renderer->detailshift !== 0) {
+                                        $xx = $x << 1;
+                                        $offset = $renderer->ylookup[$y] + $renderer->columnofs[$xx];
+                                        $fb[$offset] = $value;
+                                        $fb[$offset + 1] = $value;
+                                    } else {
+                                        $fb[$renderer->ylookup[$y] + $renderer->columnofs[$x]] = $value;
+                                    }
                                 }
                             }
                             $texfrac += $yIscale;

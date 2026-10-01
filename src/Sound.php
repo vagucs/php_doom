@@ -35,6 +35,7 @@ final class Sound
     private mixed $winmm = null;
     public ?Video $output = null;
     public bool $enabled = true;
+    public bool $musicEnabled = true;
     public int $sfxVolume = 8;
     public int $musicVolume = 8;
 
@@ -110,9 +111,23 @@ final class Sound
         $this->changeMusic($name, true);
     }
 
+    /** @return string[] */
+    public static function doom2Music(): array
+    {
+        return self::DOOM2_MUSIC;
+    }
+
+    public function hasMusic(string $name): bool
+    {
+        if ($this->wad === null || $name === '') {
+            return false;
+        }
+        return $this->wad->checkNumForName('D_' . strtoupper(substr($name, 0, 6))) >= 0;
+    }
+
     public function changeMusic(string $name, bool $looping = true): void
     {
-        if ($this->wad === null || $name === '' || strtolower($name) === $this->musicName) {
+        if (!$this->musicEnabled || $this->wad === null || $name === '' || strtolower($name) === $this->musicName) {
             return;
         }
         $number = $this->wad->checkNumForName('D_' . strtoupper(substr($name, 0, 6)));

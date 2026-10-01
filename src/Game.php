@@ -42,6 +42,10 @@ final class Game
     public bool $running = true;
     public bool $showFps = false;
     public bool $nomonsters = false;
+    public bool $fastparm = false;
+    public bool $respawnparm = false;
+    public bool $respawnmonsters = false;
+    public ?bool $_fastOn = null;
     public bool $fullscreen = false;
     public bool $crt = false;
     public string $iwadPath = '';
@@ -50,6 +54,12 @@ final class Game
     public int $detailLevel = 0;
     public int $screenSize = 7;
     public int $mouseSensitivity = 5;
+    public bool $useMouse = true;
+    public int $mouseX = 0;
+    public int $mouseY = 0;
+    public bool $mouseFire = false;
+    public bool $nosound = false;
+    public bool $nomusic = false;
     public int $totalkills = 0;
     public int $totalitems = 0;
     public int $totalsecret = 0;
@@ -61,12 +71,30 @@ final class Game
     public AmMap $automap;
     private int $turnheld = 0;
     private ?string $titlePatch = null;
+    private ?string $creditPatch = null;
+    private ?string $pagePatch = null;
+    private int $pageTic = 0;
+    private int $demoSequence = -1;
+    private bool $advancedemo = false;
+    private bool $demoPlayback = false;
+    public bool $demoRecording = false;
+    public string $demoName = '';
+    public bool $singledemo = false;
+    public bool $timingdemo = false;
+    public int $timedemoStart = 0;
+    public int $gametic = 0;
+    public ?string $recordName = null;
+    public ?string $playdemoName = null;
+    public ?string $timedemoName = null;
+    /** @var list<string> */
+    public array $pwadFiles = [];
+    private string $demoBuffer = '';
+    private int $demoP = 0;
+    private const DEMOMARKER = 0x80;
     private int $palette = -1;
     private ?string $playpal = null;
     private ?int $wipeState = Defs::GS_TITLE;
     private int $nextMap = 1;
-    /** @var array<string,int> */
-    private array $cheats = ['iddqd' => 0, 'idkfa' => 0, 'idfa' => 0, 'iddt' => 0, 'idclip' => 0, 'idspispopd' => 0];
 
     public function __construct()
     {
@@ -97,6 +125,11 @@ final class Game
         $this->specials?->crossSpecial($line, $side, $thing);
     }
 
+    public function shootSpecial(object $line, object $thing): void
+    {
+        $this->specials?->shootSpecial($line, $thing);
+    }
+
     public function damageMobj(object $target, ?object $source, int $damage, ?object $inflictor = null): void
     {
         if (!$target->alive || ($target->flags & Defs::MF_SHOOTABLE) === 0) {
@@ -109,13 +142,24 @@ final class Game
         $skipSaw = $source?->player !== null && $source->player->readyweapon === Defs::WP_CHAINSAW;
         if ($origin !== null && ($target->flags & Defs::MF_NOCLIP) === 0 && !$skipSaw) {
             $angle = Collision::angleTo($origin->x, $origin->y, $target->x, $target->y);
-            $thrust = $damage * intdiv(Defs::FRACUNIT, 8);
+            Info::boot();
+            $mass = (int) Info::$liveMobjinfo[$target->type][Info::MI_MASS] ?: 100;
+            $thrust = intdiv($damage * intdiv(Defs::FRACUNIT, 8) * 100, $mass);
+            if (
+                $damage < 40
+                && $damage > $target->health
+                && $target->z - $origin->z > 64 * Defs::FRACUNIT
+                && (Enemy::publicRandom() & 1)
+            ) {
+                $angle = Compat::asU32($angle + Defs::ANG180);
+                $thrust *= 4;
+            }
             $target->momx += Compat::fixedMul($thrust, Tables::fineCos($angle));
             $target->momy += Compat::fixedMul($thrust, Tables::fineSin($angle));
         }
         if ($target->player !== null) {
             $p = $target->player;
-            if (($p->cheats & Defs::CF_GODMODE) !== 0 && $damage < 1000) {
+            if ((($p->cheats & Defs::CF_GODMODE) !== 0 || $p->powers[Defs::PW_INVULNERABILITY]) && $damage < 1000) {
                 return;
             }
             if ($p->armortype) {
@@ -130,6 +174,7 @@ final class Game
             $p->health -= $damage;
             $target->health = $p->health;
             $p->damagecount = min(100, $p->damagecount + $damage);
+            $p->attacker = $source;
             if ($p->health <= 0) {
                 $p->health = 0;
                 $p->playerstate = Defs::PST_DEAD;
@@ -138,20 +183,33 @@ final class Game
                 $this->startSound('pldeth');
             } else {
                 $this->startSound('plpain');
+                $this->painOrWake($target, $source);
             }
             return;
         }
         $target->health -= $damage;
         if ($target->health <= 0) {
             Enemy::killMonster($target, $this, $source);
-        } else {
-            $this->startSound('popain');
-            if ($source !== null) {
-                $target->target = $source;
-                if (in_array($target->aiState, ['', 'look'], true)) {
-                    $target->aiState = 'chase';
-                    $target->reactiontime = 0;
-                }
+            return;
+        }
+        $this->painOrWake($target, $source);
+    }
+
+    private function painOrWake(object $target, ?object $source): void
+    {
+        Info::boot();
+        $info = Info::$liveMobjinfo[$target->type];
+        if (Enemy::publicRandom() < (int) $info[Info::MI_PAINCHANCE] && ($target->flags & Defs::MF_SKULLFLY) === 0) {
+            $target->flags |= Defs::MF_JUSTHIT;
+            if ((int) $info[Info::MI_PAINSTATE]) {
+                Thinker::setMobjState($target, (int) $info[Info::MI_PAINSTATE], $this->world, $this);
+            }
+        }
+        $target->reactiontime = 0;
+        if ($source !== null && $source !== $target && $target->player === null) {
+            $target->target = $source;
+            if ($target->istate === (int) $info[Info::MI_SPAWNSTATE] && (int) $info[Info::MI_SEESTATE]) {
+                Thinker::setMobjState($target, (int) $info[Info::MI_SEESTATE], $this->world, $this);
             }
         }
     }
@@ -162,23 +220,21 @@ final class Game
             throw new \LogicException('resources not initialized');
         }
         $previous = $carry ? $this->player : null;
+        Enemy::clearRandom();
         $this->world = new World();
         $this->world->setupLevel($this->wad, $this->res, $this->episode, $this->mapn);
         $this->specials = new Specials($this->world, $this->res, $this->sound);
-        $start = $this->world->playerStart();
-        if ($start === null) {
+        $this->player = null;
+        [$this->totalkills, $this->totalitems] = Mobj::spawnMapThings($this->world, $this->skill, $this);
+        if ($this->player === null) {
             throw new \RuntimeException('no player 1 start');
         }
-        $this->player = Player::spawnPlayer($this->world, $start);
         if ($previous !== null) {
             $this->carryPlayer($previous);
         }
         $this->player->killcount = $this->player->itemcount = $this->player->secretcount = 0;
-        $this->totalkills = $this->totalitems = 0;
         $this->totalsecret = count(array_filter($this->world->sectors, static fn($s) => $s->special === 9));
-        if (!$this->nomonsters) {
-            [$this->totalkills, $this->totalitems] = Mobj::spawnMapThings($this->world, $this->skill);
-        }
+        Thinker::applyFast($this);
         $this->leveltime = 0;
         $this->gamestate = Defs::GS_LEVEL;
         $this->specials->exitRequested = false;
@@ -187,6 +243,7 @@ final class Game
         $this->finale = null;
         $this->sound->playLevelMusic($this->episode, $this->mapn);
         $this->automap->resetLevel();
+        $this->status?->reset($this->player);
         fwrite(STDOUT, "Entering E{$this->episode}M{$this->mapn}\n");
     }
 
@@ -241,10 +298,16 @@ final class Game
         $this->gamestate = Defs::GS_INTERMISSION;
     }
 
-    public function worldDone(): void
+    public function worldDone(bool $fromFinale = false): void
     {
-        if (($this->specials?->secretExit ?? false) && $this->player !== null) {
+        $secret = $this->specials?->secretExit ?? false;
+        if ($secret && $this->player !== null) {
             $this->player->didsecret = true;
+        }
+        if (!$fromFinale && $this->commercial() && Finale::commercialFinaleMap($this->mapn, $secret)) {
+            $this->finale = new Finale($this);
+            $this->gamestate = Defs::GS_FINALE;
+            return;
         }
         $this->mapn = $this->nextMap;
         $lump = $this->commercial() ? sprintf('MAP%02d', $this->mapn) : "E{$this->episode}M{$this->mapn}";
@@ -262,10 +325,18 @@ final class Game
 
     public function startNewGame(int $skill, int $episode, int $map): void
     {
+        $this->demoPlayback = false;
+        $this->advancedemo = false;
+        $this->demoBuffer = '';
         $this->skill = $skill;
         $this->episode = $episode;
         $this->mapn = $map;
+        $this->_fastOn = null;
+        Thinker::applyFast($this);
         $this->loadLevel();
+        if ($this->demoRecording) {
+            $this->beginRecording();
+        }
     }
 
     public function saveGame(int $slot, string $description): bool
@@ -282,12 +353,16 @@ final class Game
 
     public function loadGame(int $slot): bool
     {
+        $this->demoPlayback = false;
+        $this->advancedemo = false;
+        $this->demoBuffer = '';
         if (!Saveg::readAndRestore($this, $slot)) {
             return false;
         }
         $this->palette = -1;
         $this->keys = [];
         $this->automap->resetLevel();
+        $this->status?->reset($this->player);
         $this->player?->setMessage('game loaded.');
         fwrite(STDOUT, "Loaded E{$this->episode}M{$this->mapn}\n");
         return true;
@@ -295,11 +370,225 @@ final class Game
 
     public function returnToTitle(): void
     {
-        $this->gamestate = Defs::GS_TITLE;
         $this->player = $this->world = $this->wi = $this->finale = null;
         $this->automap->resetLevel();
-        $this->sound->playTitleMusic();
         $this->menu?->clear();
+        $this->startTitle();
+    }
+
+    public function startTitle(): void
+    {
+        $this->demoPlayback = false;
+        $this->demoBuffer = '';
+        $this->demoP = 0;
+        $this->demoSequence = -1;
+        $this->advancedemo = true;
+        $this->doAdvanceDemo();
+    }
+
+    private function pageTicker(): void
+    {
+        --$this->pageTic;
+        if ($this->pageTic < 0) {
+            $this->advancedemo = true;
+        }
+    }
+
+    private function doAdvanceDemo(): void
+    {
+        $this->advancedemo = false;
+        $this->demoPlayback = false;
+        $this->demoSequence = ($this->demoSequence + 1) % 6;
+        switch ($this->demoSequence) {
+            case 0:
+                $this->pageTic = $this->commercial() ? Defs::TICRATE * 11 : 170;
+                $this->gamestate = Defs::GS_TITLE;
+                $this->pagePatch = $this->titlePatch;
+                $this->sound->playTitleMusic();
+                break;
+            case 1:
+                if (!$this->playDemo('demo1')) {
+                    $this->advancedemo = true;
+                    $this->doAdvanceDemo();
+                }
+                break;
+            case 2:
+                $this->pageTic = 200;
+                $this->gamestate = Defs::GS_TITLE;
+                $this->pagePatch = $this->creditPatch ?? $this->titlePatch;
+                break;
+            case 3:
+                if (!$this->playDemo('demo2')) {
+                    $this->advancedemo = true;
+                    $this->doAdvanceDemo();
+                }
+                break;
+            case 4:
+                $this->pageTic = $this->commercial() ? Defs::TICRATE * 11 : 200;
+                $this->gamestate = Defs::GS_TITLE;
+                $this->pagePatch = $this->titlePatch;
+                if ($this->commercial()) {
+                    $this->sound->playTitleMusic();
+                }
+                break;
+            default:
+                if (!$this->playDemo('demo3')) {
+                    $this->advancedemo = true;
+                    $this->doAdvanceDemo();
+                }
+                break;
+        }
+    }
+
+    private function playDemo(string $name): bool
+    {
+        $data = $this->loadDemoBytes($name);
+        if ($data === null || strlen($data) < 13) {
+            return false;
+        }
+        $this->demoBuffer = $data;
+        $this->demoP = 0;
+        $demoVersion = ord($data[$this->demoP++]);
+        if ($demoVersion <= 4) {
+            $this->demoP = 0;
+        }
+        $demoSkill = ord($data[$this->demoP++]);
+        $demoEpisode = ord($data[$this->demoP++]);
+        $demoMap = ord($data[$this->demoP++]);
+        $this->demoP += 5;
+        $this->demoP += 4;
+        if ($demoSkill <= 4) {
+            $this->skill = $demoSkill;
+        }
+        if ($demoEpisode >= 1) {
+            $this->episode = $demoEpisode;
+        }
+        if ($demoMap >= 1) {
+            $this->mapn = $demoMap;
+        }
+        $this->loadLevel(false);
+        $this->demoPlayback = true;
+        if ($this->timingdemo) {
+            $this->timedemoStart = $this->video->ticksMs();
+            $this->gametic = 0;
+        }
+        return true;
+    }
+
+    private function loadDemoBytes(string $name): ?string
+    {
+        foreach ([$name, $name . '.lmp'] as $path) {
+            if (is_file($path)) {
+                $data = file_get_contents($path);
+                return $data === false ? null : $data;
+            }
+        }
+        if ($this->wad->checkNumForName($name) < 0) {
+            return null;
+        }
+        return $this->wad->cacheLumpName($name);
+    }
+
+    private function beginRecording(): void
+    {
+        $this->demoBuffer = chr(109)
+            . chr($this->skill & 0xFF)
+            . chr($this->episode & 0xFF)
+            . chr($this->mapn & 0xFF)
+            . chr(0)
+            . chr($this->respawnparm ? 1 : 0)
+            . chr($this->fastparm ? 1 : 0)
+            . chr($this->nomonsters ? 1 : 0)
+            . chr(0)
+            . "\x01\x00\x00\x00";
+        $this->demoP = strlen($this->demoBuffer);
+        $this->demoRecording = true;
+    }
+
+    private function writeDemoTiccmd(Ticcmd $cmd): void
+    {
+        $this->demoBuffer .= chr($cmd->forwardmove & 0xFF)
+            . chr($cmd->sidemove & 0xFF)
+            . chr(($cmd->angleturn >> 8) & 0xFF)
+            . chr($cmd->buttons & 0xFF);
+        $this->demoP = strlen($this->demoBuffer);
+    }
+
+    private function finishRecording(): void
+    {
+        if (!$this->demoRecording) {
+            return;
+        }
+        $this->demoBuffer .= chr(self::DEMOMARKER);
+        $name = $this->demoName !== '' ? $this->demoName : 'demo.lmp';
+        if (!str_ends_with(strtolower($name), '.lmp')) {
+            $name .= '.lmp';
+        }
+        if (@file_put_contents($name, $this->demoBuffer) === false) {
+            fwrite(STDOUT, "Demo write failed: {$name}\n");
+        } else {
+            fwrite(STDOUT, "Demo {$name} recorded\n");
+        }
+        $this->demoRecording = false;
+    }
+
+    private function checkDemoStatus(): void
+    {
+        if ($this->timingdemo) {
+            $now = $this->video->ticksMs();
+            $real = max(1, intdiv(($now - $this->timedemoStart) * Defs::TICRATE, 1000));
+            $fps = ($this->gametic * Defs::TICRATE) / $real;
+            fwrite(STDOUT, sprintf("timed %d gametics in %d realtics (%.1f fps)\n", $this->gametic, $real, $fps));
+            $this->timingdemo = false;
+            $this->demoPlayback = false;
+            $this->running = false;
+            return;
+        }
+        if ($this->demoPlayback) {
+            $this->demoPlayback = false;
+            if ($this->singledemo) {
+                $this->running = false;
+            } else {
+                $this->advancedemo = true;
+            }
+            return;
+        }
+        if ($this->demoRecording) {
+            $this->finishRecording();
+            $this->running = false;
+        }
+    }
+
+    private function demoSByte(): int
+    {
+        $n = ord($this->demoBuffer[$this->demoP++]);
+        return $n >= 128 ? $n - 256 : $n;
+    }
+
+    private function readDemoTiccmd(): Ticcmd
+    {
+        $cmd = new Ticcmd();
+        if ($this->demoBuffer === '' || $this->demoP + 4 > strlen($this->demoBuffer)
+            || ord($this->demoBuffer[$this->demoP]) === self::DEMOMARKER) {
+            $this->checkDemoStatus();
+            return $cmd;
+        }
+        $cmd->forwardmove = $this->demoSByte();
+        $cmd->sidemove = $this->demoSByte();
+        $cmd->angleturn = ord($this->demoBuffer[$this->demoP++]) << 8;
+        if ($cmd->angleturn >= 32768) {
+            $cmd->angleturn -= 65536;
+        }
+        $cmd->buttons = ord($this->demoBuffer[$this->demoP++]);
+        return $cmd;
+    }
+
+    private function beginPlay(): void
+    {
+        $this->demoPlayback = false;
+        $this->advancedemo = false;
+        $this->demoBuffer = '';
+        $this->loadLevel(false);
     }
 
     public function buildTiccmd(): Ticcmd
@@ -355,11 +644,41 @@ final class Game
                 }
             }
         }
+        if ($this->useMouse) {
+            $sens = ($this->mouseSensitivity + 5) / 10.0;
+            $mx = (int) ($this->mouseX * $sens);
+            $my = (int) ($this->mouseY * $sens);
+            $cmd->forwardmove += $my;
+            if ($cmd->forwardmove > 127) {
+                $cmd->forwardmove = 127;
+            }
+            if ($cmd->forwardmove < -127) {
+                $cmd->forwardmove = -127;
+            }
+            if ($strafe) {
+                $cmd->sidemove += $mx * 2;
+                if ($cmd->sidemove > 127) {
+                    $cmd->sidemove = 127;
+                }
+                if ($cmd->sidemove < -127) {
+                    $cmd->sidemove = -127;
+                }
+            } else {
+                $cmd->angleturn -= $mx * 8;
+            }
+            if ($this->mouseFire) {
+                $cmd->buttons |= Defs::BT_ATTACK;
+            }
+            $this->mouseX = 0;
+            $this->mouseY = 0;
+        }
         return $cmd;
     }
 
     public function runTic(): void
     {
+        ++$this->gametic;
+        $this->syncMouseGrab();
         if ($this->wiping) {
             if ($this->wipe->tick(1, $this->video->fb)) {
                 $this->wiping = false;
@@ -368,7 +687,11 @@ final class Game
         }
         $this->menu?->ticker();
         $this->sound->update();
+        if ($this->advancedemo) {
+            $this->doAdvanceDemo();
+        }
         if ($this->gamestate === Defs::GS_TITLE) {
+            $this->pageTicker();
             return;
         }
         if ($this->gamestate === Defs::GS_INTERMISSION) {
@@ -381,15 +704,32 @@ final class Game
         if ($this->gamestate === Defs::GS_FINALE) {
             $this->finale?->ticker();
             if ($this->finale?->done) {
-                $this->returnToTitle();
+                if ($this->finale->action === 'worlddone') {
+                    $this->worldDone(true);
+                } else {
+                    $this->returnToTitle();
+                }
             }
             return;
         }
         if ($this->gamestate !== Defs::GS_LEVEL || $this->player === null) {
             return;
         }
-        $this->player->cmd = $this->menu?->active ? new Ticcmd() : $this->buildTiccmd();
+        if ($this->demoPlayback) {
+            $this->player->cmd = $this->readDemoTiccmd();
+        } elseif ($this->menu?->active) {
+            $this->player->cmd = new Ticcmd();
+        } else {
+            $this->player->cmd = $this->buildTiccmd();
+            if ($this->demoRecording) {
+                $this->writeDemoTiccmd($this->player->cmd);
+            }
+        }
         Player::playerThink($this->world, $this->player, $this, $this->leveltime);
+        if ($this->player->playerstate === Defs::PST_REBORN) {
+            $this->loadLevel(false);
+            return;
+        }
         Enemy::tickEnemies($this->world, $this);
         $this->specials?->tick();
         if ($this->specials?->exitRequested) {
@@ -399,6 +739,7 @@ final class Game
         }
         ++$this->leveltime;
         $this->automap->ticker($this);
+        $this->status?->ticker($this->player);
     }
 
     public function draw(): void
@@ -433,9 +774,9 @@ final class Game
     /** @param array<int,int> $fb */
     private function drawFrame(array &$fb): void
     {
-        if ($this->gamestate === Defs::GS_TITLE && $this->titlePatch !== null) {
+        if ($this->gamestate === Defs::GS_TITLE && $this->pagePatch !== null) {
             VVideo::fill($fb, 0);
-            VVideo::drawPatch($fb, 0, 0, $this->titlePatch);
+            VVideo::drawPatch($fb, 0, 0, $this->pagePatch);
             return;
         }
         if ($this->gamestate === Defs::GS_INTERMISSION && $this->wi !== null) {
@@ -455,11 +796,14 @@ final class Game
         } else {
             $mo = $this->player->mo;
             VVideo::fill($fb, 0);
-            $this->renderer->setupFrame($mo->x, $mo->y, $this->player->viewz, $mo->angle, $this->player->extralight);
+            $this->renderer->setupFrame($mo->x, $mo->y, $this->player->viewz, $mo->angle, $this->player->extralight, $this->player->fixedcolormap);
             $this->renderer->render($this->world, $fb);
             Sprites::drawSprites($this->renderer, $this->world, $fb);
             $this->renderer->drawMasked();
-            $this->drawWeapon($fb);
+            if ($this->player->playerstate !== Defs::PST_DEAD
+                || $this->player->pspriteSy < Sprites::WEAPONBOTTOM) {
+                $this->drawWeapon($fb);
+            }
         }
         if ($this->status !== null && ($this->automap->active || $this->renderer->screenblocks < 11)) {
             $this->status->draw($fb, $this->player, $this->showMessages);
@@ -471,10 +815,19 @@ final class Game
         $palette = 0;
         $p = $this->player;
         if ($p !== null && $this->gamestate === Defs::GS_LEVEL) {
-            if ($p->damagecount) {
-                $palette = min(7, ($p->damagecount + 7) >> 3) + 1;
+            $cnt = $p->damagecount;
+            if ($p->powers[Defs::PW_STRENGTH]) {
+                $bzc = 12 - intdiv($p->powers[Defs::PW_STRENGTH], 64);
+                if ($bzc > $cnt) {
+                    $cnt = $bzc;
+                }
+            }
+            if ($cnt) {
+                $palette = min(7, ($cnt + 7) >> 3) + 1;
             } elseif ($p->bonuscount) {
                 $palette = min(3, ($p->bonuscount + 7) >> 3) + 9;
+            } elseif ($p->powers[Defs::PW_IRONFEET] > 4 * 32 || ($p->powers[Defs::PW_IRONFEET] & 8) !== 0) {
+                $palette = Defs::RADIATIONPAL;
             }
         }
         if ($palette === $this->palette) {
@@ -515,6 +868,15 @@ final class Game
         $this->renderer?->setViewSize($this->screenSize + 3, $this->detailLevel);
     }
 
+    private function syncMouseGrab(): void
+    {
+        $want = $this->useMouse
+            && $this->gamestate === Defs::GS_LEVEL
+            && !$this->demoPlayback
+            && !($this->menu?->active ?? false);
+        $this->video->setRelativeMouse($want);
+    }
+
     /** M_SizeDisplay: same control as Options → Screen Size (not the OS window). */
     public function sizeDisplay(int $choice): void
     {
@@ -527,19 +889,47 @@ final class Game
         $this->startSound('stnmov');
     }
 
-    public function handleEvent(string $type, int $key = 0, string $unicodeChar = ''): void
+    public function handleEvent(string $type, int $key = 0, string $unicodeChar = '', int $dx = 0, int $dy = 0, int $button = 0): void
     {
         if ($type === 'quit') {
+            if ($this->demoRecording) {
+                $this->finishRecording();
+            }
             $this->running = false;
             return;
         }
+        if ($type === 'mousemotion') {
+            if ($this->useMouse) {
+                $this->mouseX += $dx;
+                $this->mouseY += -$dy;
+            }
+            return;
+        }
+        if ($type === 'mousedown') {
+            if ($button === 1) {
+                $this->mouseFire = true;
+                if ($this->finale !== null && $this->gamestate === Defs::GS_FINALE) {
+                    $this->finale->responder();
+                }
+            }
+            return;
+        }
+        if ($type === 'mouseup') {
+            if ($button === 1) {
+                $this->mouseFire = false;
+            }
+            return;
+        }
         if ($type === 'keydown') {
-            if (in_array($key, [Keys::LALT, Keys::RALT, Keys::LSHIFT, Keys::RSHIFT, Keys::LCTRL, Keys::RCTRL], true)) {
+            if (in_array($key, [Keys::LALT, Keys::RALT, Keys::LSHIFT, Keys::RSHIFT, Keys::LCTRL, Keys::RCTRL, Keys::SPACE, Keys::RETURN, Keys::KP_ENTER, ord('e')], true)) {
                 $this->keys[$key] = true;
             }
             if (in_array($key, [Keys::RETURN, Keys::KP_ENTER], true) && (isset($this->keys[Keys::LALT]) || isset($this->keys[Keys::RALT]))) {
                 $this->video->toggleFullscreen();
                 $this->fullscreen = $this->video->fullscreen;
+                return;
+            }
+            if ($this->finale !== null && $this->gamestate === Defs::GS_FINALE && $this->finale->responder()) {
                 return;
             }
             if ($this->menu?->responder($key, $unicodeChar)) {
@@ -556,10 +946,10 @@ final class Game
                 return;
             }
             $this->keys[$key] = true;
-            if (in_array($key, [Keys::RETURN, Keys::KP_ENTER], true) && $this->gamestate === Defs::GS_TITLE) {
-                $this->loadLevel();
-            } elseif ($key === Keys::F11) {
+            if ($key === Keys::F11) {
                 $this->video->showFps = !$this->video->showFps;
+            } elseif ($this->demoPlayback || $this->gamestate === Defs::GS_TITLE) {
+                $this->beginPlay();
             } else {
                 $this->feedCheat($unicodeChar);
             }
@@ -571,53 +961,85 @@ final class Game
 
     private function feedCheat(string $input): void
     {
-        if ($this->gamestate !== Defs::GS_LEVEL || $this->player === null || $this->skill === Defs::SK_NIGHTMARE) {
+        if ($this->gamestate !== Defs::GS_LEVEL || $this->player === null) {
             return;
         }
         $char = strtolower($input);
-        if (strlen($char) !== 1 || !ctype_alpha($char)) {
+        if (strlen($char) !== 1 || !ctype_alnum($char)) {
             return;
         }
-        foreach ($this->cheats as $sequence => $position) {
-            if ($char === ($sequence[$position] ?? '')) {
-                if (++$position >= strlen($sequence)) {
-                    $this->cheats[$sequence] = 0;
-                    switch ($sequence) {
-                        case 'iddqd':
-                            $this->cheatGod();
-                            break;
-                        case 'idkfa':
-                            $this->cheatAmmo(true);
-                            break;
-                        case 'idfa':
-                            $this->cheatAmmo(false);
-                            break;
-                        case 'iddt':
-                            if ($this->automap->active) {
-                                $this->automap->cycleIddt();
-                            }
-                            break;
-                        case 'idclip':
-                        case 'idspispopd':
-                            $this->cheatNoclip();
-                            break;
-                    }
-                } else {
-                    $this->cheats[$sequence] = $position;
-                }
-            } else {
-                $this->cheats[$sequence] = $char === $sequence[0] ? 1 : 0;
+        $nightmare = $this->skill === Defs::SK_NIGHTMARE;
+        foreach (Deh::get()->cheats as $cheat) {
+            $param = $cheat->feed($char);
+            if ($param === null) {
+                continue;
             }
+            if ($nightmare && !in_array($cheat->action, ['clev', 'iddt'], true)) {
+                continue;
+            }
+            $this->doCheat($cheat->action, $param);
+        }
+    }
+
+    private function doCheat(string $action, string $param): void
+    {
+        switch ($action) {
+            case 'god':
+                $this->cheatGod();
+                break;
+            case 'kfa':
+                $this->cheatAmmo(true);
+                break;
+            case 'fa':
+                $this->cheatAmmo(false);
+                break;
+            case 'noclip':
+            case 'noclip2':
+                $this->cheatNoclip();
+                break;
+            case 'iddt':
+                if ($this->automap->active) {
+                    $this->automap->cycleIddt();
+                }
+                break;
+            case 'behold':
+                $this->player->setMessage('invin visis rad allmap lite amp');
+                break;
+            case 'beholdv':
+            case 'beholds':
+            case 'beholdi':
+            case 'beholdr':
+            case 'beholda':
+            case 'beholdl':
+                $this->cheatBehold(strpos('vsiral', $action[6]));
+                break;
+            case 'choppers':
+                $this->player->weaponowned[Defs::WP_CHAINSAW] = true;
+                $this->player->pendingweapon = Defs::WP_CHAINSAW;
+                $this->player->powers[Defs::PW_INVULNERABILITY] = 1;
+                $this->player->setMessage("... doesn't suck - GM");
+                break;
+            case 'mypos':
+                $mo = $this->player->mo;
+                $this->player->setMessage(sprintf('ang=0x%x;x,y=(0x%x,0x%x)', $mo->angle, $mo->x, $mo->y));
+                break;
+            case 'clev':
+                $this->cheatClev($param);
+                break;
+            case 'mus':
+                $this->cheatMus($param);
+                break;
         }
     }
 
     private function cheatGod(): void
     {
         $p = $this->player;
+        $deh = Deh::get();
         $p->cheats ^= Defs::CF_GODMODE;
         if (($p->cheats & Defs::CF_GODMODE) !== 0) {
-            $p->health = 100;
-            $p->mo->health = 100;
+            $p->health = $deh->godModeHealth;
+            $p->mo->health = $deh->godModeHealth;
             $p->setMessage('Degreelessness Mode On');
         } else {
             $p->setMessage('Degreelessness Mode Off');
@@ -627,9 +1049,11 @@ final class Game
     private function cheatAmmo(bool $keys): void
     {
         $p = $this->player;
-        $p->armorpoints = 200;
-        $p->armortype = 2;
+        $deh = Deh::get();
+        $p->armorpoints = $keys ? $deh->idkfaArmor : $deh->idfaArmor;
+        $p->armortype = $keys ? $deh->idkfaArmorClass : $deh->idfaArmorClass;
         $p->weaponowned = array_fill(0, count($p->weaponowned), true);
+        $p->maxammo = $deh->maxammo;
         foreach ($p->ammo as $i => $_) {
             $p->ammo[$i] = $p->maxammo[$i];
         }
@@ -651,15 +1075,93 @@ final class Game
         $p->setMessage(($p->cheats & Defs::CF_NOCLIP) !== 0 ? 'No Clipping Mode ON' : 'No Clipping Mode OFF');
     }
 
+    private function cheatBehold(int|false $pw): void
+    {
+        if ($pw === false || $pw < 0) {
+            return;
+        }
+        $p = $this->player;
+        if (!$p->powers[$pw]) {
+            Player::givePower($p, $pw);
+            if ($pw === Defs::PW_STRENGTH && $p->readyweapon !== Defs::WP_FIST) {
+                $p->pendingweapon = Defs::WP_FIST;
+            }
+        } elseif ($pw === Defs::PW_STRENGTH) {
+            $p->powers[$pw] = 0;
+        } else {
+            $p->powers[$pw] = 1;
+        }
+        $p->setMessage('Power-up Toggled');
+    }
+
+    private function cheatClev(string $param): void
+    {
+        if (strlen($param) < 2 || !ctype_digit($param)) {
+            return;
+        }
+        $a = (int) $param[0];
+        $b = (int) $param[1];
+        if ($this->commercial()) {
+            $episode = 1;
+            $mapn = $a * 10 + $b;
+            $lump = sprintf('MAP%02d', $mapn);
+        } else {
+            $episode = $a;
+            $mapn = $b;
+            $lump = "E{$episode}M{$mapn}";
+        }
+        if ($episode < 1 || $mapn < 1 || $this->wad->checkNumForName($lump) < 0) {
+            return;
+        }
+        $this->player->setMessage('Changing Level...');
+        $this->startNewGame($this->skill, $episode, $mapn);
+    }
+
+    private function cheatMus(string $param): void
+    {
+        if (strlen($param) < 2 || !ctype_digit($param)) {
+            return;
+        }
+        $a = (int) $param[0];
+        $b = (int) $param[1];
+        if ($this->commercial()) {
+            $mapn = $a * 10 + $b;
+            $tracks = Sound::doom2Music();
+            if ($mapn < 1 || $mapn > count($tracks)) {
+                $this->player->setMessage('IMPOSSIBLE SELECTION');
+                return;
+            }
+            $name = $tracks[$mapn - 1];
+        } else {
+            if ($a < 1 || $b < 1 || $b > 9) {
+                $this->player->setMessage('IMPOSSIBLE SELECTION');
+                return;
+            }
+            $name = "e{$a}m{$b}";
+        }
+        if (!$this->sound->hasMusic($name)) {
+            $this->player->setMessage('IMPOSSIBLE SELECTION');
+            return;
+        }
+        $this->sound->changeMusic($name, true);
+        $this->player->setMessage('Music Change');
+    }
+
     public static function main(array $argv): int
     {
         try {
             $game = new self();
+            Config::load($game);
             $iwad = self::parseArgs($argv, $game);
             $path = self::findIwad($iwad);
             $game->iwadPath = $path;
             fwrite(STDOUT, "IWAD: {$path}\n");
             $game->wad->addFile($path);
+            foreach ($game->pwadFiles as $extra) {
+                fwrite(STDOUT, "PWAD: {$extra}\n");
+                $game->wad->addFile($extra);
+            }
+            Deh::get()->loadAfterIwad($game->wad, $path);
             Tables::initTables();
             $game->res = new Resources($game->wad);
             $game->res->init();
@@ -670,38 +1172,82 @@ final class Game
             $game->video->crt = $game->crt;
             $game->playpal = $game->wad->cacheLumpName('PLAYPAL');
             $game->video->setPalette($game->playpal);
+            if ($game->nosound) {
+                $game->sound->enabled = false;
+                $game->sound->musicEnabled = false;
+            }
+            if ($game->nomusic) {
+                $game->sound->musicEnabled = false;
+            }
             $game->sound->init($game->wad);
             $game->sound->output = $game->video;
             $game->menu = new Menu($game->wad, $game->sound, $game);
             if ($game->wad->checkNumForName('TITLEPIC') >= 0) {
                 $game->titlePatch = $game->wad->cacheLumpName('TITLEPIC');
             }
+            if ($game->wad->checkNumForName('CREDIT') >= 0) {
+                $game->creditPatch = $game->wad->cacheLumpName('CREDIT');
+            }
+            $game->pagePatch = $game->titlePatch;
             $game->status = new Status($game->wad);
-            if (in_array('-warp', $argv, true)) {
+            if ($game->recordName !== null) {
+                $game->demoName = $game->recordName;
+                $game->demoRecording = true;
+                $game->startNewGame($game->skill, $game->episode, $game->mapn);
+            } elseif ($game->timedemoName !== null) {
+                $game->timingdemo = true;
+                $game->singledemo = true;
+                if (!$game->playDemo($game->timedemoName)) {
+                    fwrite(STDOUT, "timedemo not found: {$game->timedemoName}\n");
+                    $game->video->shutdown();
+                    return 1;
+                }
+            } elseif ($game->playdemoName !== null) {
+                $game->singledemo = true;
+                if (!$game->playDemo($game->playdemoName)) {
+                    fwrite(STDOUT, "playdemo not found: {$game->playdemoName}\n");
+                    $game->video->shutdown();
+                    return 1;
+                }
+            } elseif (in_array('-warp', $argv, true)) {
                 $game->loadLevel();
             } else {
-                $game->startSound('swtchn');
-                $game->sound->playTitleMusic();
+                $game->startTitle();
             }
             $tickMs = 1000 / Defs::TICRATE;
             $accum = 0.0;
             $last = $game->video->ticksMs();
             while ($game->running) {
                 foreach ($game->video->pollEvents() as $event) {
-                    $game->handleEvent($event['type'], (int) ($event['key'] ?? $event['sym'] ?? 0), (string) ($event['text'] ?? ''));
+                    $game->handleEvent(
+                        $event['type'],
+                        (int) ($event['key'] ?? $event['sym'] ?? 0),
+                        (string) ($event['text'] ?? ''),
+                        (int) ($event['dx'] ?? 0),
+                        (int) ($event['dy'] ?? 0),
+                        (int) ($event['button'] ?? 0),
+                    );
                 }
                 $now = $game->video->ticksMs();
                 $accum += $now - $last;
                 $last = $now;
-                while ($accum >= $tickMs) {
+                if ($game->timingdemo) {
                     $game->runTic();
-                    $accum -= $tickMs;
+                } else {
+                    while ($accum >= $tickMs) {
+                        $game->runTic();
+                        $accum -= $tickMs;
+                    }
                 }
                 $game->draw();
-                if ($accum < $tickMs / 2) {
+                if (!$game->timingdemo && $accum < $tickMs / 2) {
                     usleep(1000);
                 }
             }
+            if ($game->demoRecording) {
+                $game->finishRecording();
+            }
+            Config::save($game);
             $game->sound->stopMusic();
             $game->video->shutdown();
             return 0;
@@ -722,6 +1268,10 @@ final class Game
                 $game->showFps = true;
             } elseif ($arg === '-nomonsters') {
                 $game->nomonsters = true;
+            } elseif ($arg === '-fast') {
+                $game->fastparm = true;
+            } elseif ($arg === '-respawn') {
+                $game->respawnparm = true;
             } elseif ($arg === '-warp' && isset($argv[$i + 2])) {
                 $game->episode = (int) $argv[++$i];
                 $game->mapn = (int) $argv[++$i];
@@ -731,6 +1281,30 @@ final class Game
                 $game->fullscreen = true;
             } elseif ($arg === '-crt') {
                 $game->crt = true;
+            } elseif ($arg === '-deh') {
+                while (isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')) {
+                    Deh::get()->files[] = $argv[++$i];
+                }
+            } elseif ($arg === '-nodeh') {
+                Deh::get()->nodeh = true;
+            } elseif ($arg === '-dehlump') {
+                Deh::get()->dehlump = true;
+            } elseif ($arg === '-nocheats') {
+                Deh::get()->applyCheats = false;
+            } elseif ($arg === '-file') {
+                while (isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')) {
+                    $game->pwadFiles[] = $argv[++$i];
+                }
+            } elseif ($arg === '-record' && isset($argv[$i + 1])) {
+                $game->recordName = $argv[++$i];
+            } elseif ($arg === '-playdemo' && isset($argv[$i + 1])) {
+                $game->playdemoName = $argv[++$i];
+            } elseif ($arg === '-timedemo' && isset($argv[$i + 1])) {
+                $game->timedemoName = $argv[++$i];
+            } elseif ($arg === '-nosound') {
+                $game->nosound = true;
+            } elseif ($arg === '-nomusic') {
+                $game->nomusic = true;
             } elseif (!str_starts_with($arg, '-') && str_ends_with(strtolower($arg), '.wad')) {
                 $iwad = $arg;
             }

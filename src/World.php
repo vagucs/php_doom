@@ -131,6 +131,10 @@ final class World
     public int $bmapwidth = 0;
     public int $bmapheight = 0;
     public string $blockmaplump = '';
+    /** @var int[] */
+    public array $blockmapShorts = [];
+    /** @var array<int, ?Mobj> */
+    public array $blocklinks = [];
     public int $validcount = 0;
     /** @var Mobj[] */ public array $mobjs = [];
     public string $rejectmatrix = '';
@@ -310,13 +314,22 @@ final class World
     private function loadBlockmap(string $data): void
     {
         $this->blockmaplump = $data;
-        if (strlen($data) < 8) {
+        $n = intdiv(strlen($data), 2);
+        $lump = [];
+        for ($i = 0; $i < $n; $i++) {
+            $lump[] = Bin::u16($data, $i * 2);
+        }
+        $this->blockmapShorts = $lump;
+        if ($n < 4) {
             return;
         }
         $this->bmaporgx = Bin::i16($data, 0) * Defs::FRACUNIT;
         $this->bmaporgy = Bin::i16($data, 2) * Defs::FRACUNIT;
         $this->bmapwidth = Bin::i16($data, 4);
         $this->bmapheight = Bin::i16($data, 6);
+        $count = $this->bmapwidth * $this->bmapheight;
+        $this->blockmap = array_slice($lump, 4, $count);
+        $this->blocklinks = array_fill(0, $count, null);
     }
 
     public function playerStart(): ?MapThing

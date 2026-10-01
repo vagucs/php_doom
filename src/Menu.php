@@ -187,6 +187,10 @@ final class Menu
             $this->action('loadgame', 0);
             return true;
         }
+        if ($key === Keys::F1) {
+            $this->openHelp();
+            return true;
+        }
         if (!$this->active) {
             if ($key === Keys::ESC) {
                 $this->start();
@@ -342,6 +346,17 @@ final class Menu
         $this->message = $message;
         $this->confirm = true;
         $this->messageAction = $action;
+    }
+
+    private function openHelp(): void
+    {
+        $this->active = true;
+        $this->message = null;
+        $this->enteringSave = false;
+        $this->menus['read1']->lastOn = 0;
+        $this->screen = 'read1';
+        $this->itemOn = 0;
+        $this->sound->play('swtchn');
     }
 
     private function go(string $screen): void

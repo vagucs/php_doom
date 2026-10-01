@@ -91,7 +91,7 @@ final class Resources
 
     public function colormap(int $level): string
     {
-        $level = max(0, min(31, $level));
+        $level = max(0, min(32, $level));
         return substr($this->colormaps, $level * 256, 256);
     }
 

@@ -427,27 +427,31 @@ final class AmMap
     private function drawWalls(array &$fb, Game $game): void
     {
         foreach ($game->world->lines as $line) {
-            if (!$this->cheating && (($line->flags & Defs::ML_MAPPED) === 0 || ($line->flags & Defs::ML_DONTDRAW) !== 0)) {
-                continue;
-            }
-            $color = null;
-            if ($line->backsector === null) {
-                $color = self::REDS;
-            } elseif ($line->frontsector !== null) {
-                if ($line->special === 39) {
-                    $color = self::REDS + intdiv(self::RED_RANGE, 2);
-                } elseif (($line->flags & Defs::ML_SECRET) !== 0) {
-                    $color = self::REDS;
-                } elseif ($line->backsector->floorheight !== $line->frontsector->floorheight) {
-                    $color = self::BROWNS;
-                } elseif ($line->backsector->ceilingheight !== $line->frontsector->ceilingheight) {
-                    $color = self::YELLOWS;
-                } elseif ($this->cheating) {
-                    $color = self::GRAYS;
+            if ($this->cheating || ($line->flags & Defs::ML_MAPPED) !== 0) {
+                if (($line->flags & Defs::ML_DONTDRAW) !== 0 && !$this->cheating) {
+                    continue;
                 }
-            }
-            if ($color !== null) {
-                $this->line($fb, $line->v1->x, $line->v1->y, $line->v2->x, $line->v2->y, $color);
+                $color = null;
+                if ($line->backsector === null) {
+                    $color = self::REDS;
+                } elseif ($line->frontsector !== null) {
+                    if ($line->special === 39) {
+                        $color = self::REDS + intdiv(self::RED_RANGE, 2);
+                    } elseif (($line->flags & Defs::ML_SECRET) !== 0) {
+                        $color = self::REDS;
+                    } elseif ($line->backsector->floorheight !== $line->frontsector->floorheight) {
+                        $color = self::BROWNS;
+                    } elseif ($line->backsector->ceilingheight !== $line->frontsector->ceilingheight) {
+                        $color = self::YELLOWS;
+                    } elseif ($this->cheating) {
+                        $color = self::GRAYS;
+                    }
+                }
+                if ($color !== null) {
+                    $this->line($fb, $line->v1->x, $line->v1->y, $line->v2->x, $line->v2->y, $color);
+                }
+            } elseif (($game->player->powers[Defs::PW_ALLMAP] ?? 0) && ($line->flags & Defs::ML_DONTDRAW) === 0) {
+                $this->line($fb, $line->v1->x, $line->v1->y, $line->v2->x, $line->v2->y, self::GRAYS + 3);
             }
         }
     }

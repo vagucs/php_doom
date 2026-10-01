@@ -22,9 +22,11 @@ class Mobj
     public ?Player $player = null;
     public bool $alive = true;
     public int $reactiontime = 0;
+    public int $lastlook = 0;
     public ?Mobj $target = null;
     public int $movedir = 8;
     public int $movecount = 0;
+    public int $threshold = 0;
     public string $aiState = '';
     public int $frame = 0;
     public int $tics = 0;
@@ -34,8 +36,18 @@ class Mobj
     public int $tmx = 0;
     public int $tmy = 0;
     public ?Mobj $pickup = null;
+    public ?Mobj $bnext = null;
+    public ?Mobj $bprev = null;
+    public bool $blocklinked = false;
+    public int $bindex = -1;
     public string $attackKind = 'hitscan';
     public bool $didFire = false;
+    public string $missileKind = '';
+    public ?Mobj $tracer = null;
+    public bool $easySkip = false;
+    public int $istate = 0;
+    public mixed $spawnpoint = null;
+    public int $doomednum = -1;
 
     public function __construct(
         public int $x = 0,
@@ -86,20 +98,28 @@ class Mobj
         $this->tmy = $y;
     }
 
+    /** @var array<int,array{string,int,int,int,int,string,mixed}>|null */
+    private static ?array $infoCache = null;
+
     /** @return array<int,array{string,int,int,int,int,string,mixed}> */
     public static function infoTable(): array
     {
+        if (self::$infoCache !== null) {
+            return self::$infoCache;
+        }
         $enemy = Defs::MF_SOLID | Defs::MF_SHOOTABLE;
         $special = Defs::MF_SPECIAL;
         $solid = Defs::MF_SOLID;
-        return [
+        self::$infoCache = [
             3004 => ['POSSA1', 20, 56, 20, $enemy, 'enemy', 'posit1'],
             9 => ['SPOSA1', 20, 56, 30, $enemy, 'enemy', 'posit1'],
             3001 => ['TROOA1', 20, 56, 60, $enemy, 'enemy', 'bgsit1'],
             3002 => ['SARGA1', 30, 56, 150, $enemy, 'enemy', 'sgtsit'],
+            58 => ['SARGA1', 30, 56, 150, $enemy | Defs::MF_SHADOW, 'enemy', 'sgtsit'],
+            65 => ['CPOSA1', 20, 56, 70, $enemy, 'enemy', 'posit2'],
             3003 => ['BOSSA1', 24, 64, 1000, $enemy, 'enemy', 'brssit'],
-            3005 => ['HEADA1', 31, 56, 400, $enemy, 'enemy', 'cacsit'],
-            3006 => ['SKULA1', 16, 56, 100, $enemy, 'enemy', 'sklatk'],
+            3005 => ['HEADA1', 31, 56, 400, $enemy | Defs::MF_FLOAT | Defs::MF_NOGRAVITY, 'enemy', 'cacsit'],
+            3006 => ['SKULA1', 16, 56, 100, $enemy | Defs::MF_FLOAT | Defs::MF_NOGRAVITY, 'enemy', 'sklatk'],
             16 => ['CYBRA1', 40, 110, 4000, $enemy, 'enemy', 'cybsit'],
             7 => ['SPIDA1', 128, 100, 3000, $enemy, 'enemy', 'spisit'],
             68 => ['BSPIA1', 64, 64, 500, $enemy, 'enemy', 'bspsit'],
@@ -107,9 +127,12 @@ class Mobj
             64 => ['VILEA1', 20, 56, 700, $enemy, 'enemy', 'vilsit'],
             66 => ['SKELA1', 20, 56, 500, $enemy, 'enemy', 'skesit'],
             67 => ['FATTA1', 48, 64, 600, $enemy, 'enemy', 'mansit'],
-            71 => ['PAINA1', 31, 56, 400, $enemy, 'enemy', 'pesit'],
+            71 => ['PAINA1', 31, 56, 400, $enemy | Defs::MF_FLOAT | Defs::MF_NOGRAVITY, 'enemy', 'pesit'],
             84 => ['SSWVA1', 20, 56, 50, $enemy, 'enemy', 'posit1'],
-            72 => ['KEENA1', 16, 72, 100, $enemy, 'enemy', 'keenpn'],
+            72 => ['KEENA1', 16, 72, 100, $enemy | Defs::MF_NOGRAVITY, 'enemy', 'keenpn'],
+            87 => ['', 20, 32, 1000, Defs::MF_NOBLOCKMAP | Defs::MF_NOSECTOR, 'bosstarget', null],
+            88 => ['BBRNA1', 16, 16, 250, $enemy, 'enemy', 'bossit'],
+            89 => ['', 20, 32, 1000, Defs::MF_NOBLOCKMAP | Defs::MF_NOSECTOR, 'braineye', null],
             2035 => ['BAR1A0', 10, 42, 20, $enemy, 'enemy', null],
             2011 => ['STIMA0', 20, 16, 0, $special, 'health', 10],
             2012 => ['MEDIA0', 20, 16, 0, $special, 'health', 25],
@@ -177,9 +200,17 @@ class Mobj
             55 => ['GOR1A0', 16, 16, 0, 0, 'deco', null],
             56 => ['GOR2A0', 16, 16, 0, 0, 'deco', null],
             57 => ['GOR3A0', 16, 16, 0, 0, 'deco', null],
-            58 => ['GOR4A0', 16, 16, 0, 0, 'deco', null],
             59 => ['GOR5A0', 16, 16, 0, 0, 'deco', null],
         ];
+        return self::$infoCache;
+    }
+
+    public static function patchHitPoints(int $doomed, int $hp): void
+    {
+        self::infoTable();
+        if (isset(self::$infoCache[$doomed])) {
+            self::$infoCache[$doomed][3] = $hp;
+        }
     }
 
     public static function skillBit(int $skill): int
@@ -191,77 +222,55 @@ class Mobj
     }
 
     /** @return array{int,int} */
-    public static function spawnMapThings(World $world, int $skill): array
+    public static function spawnMapThings(World $world, int $skill, ?object $game = null): array
     {
         $bit = self::skillBit($skill);
         $kills = 0;
         $items = 0;
         $table = self::infoTable();
+        $nomonsters = (bool) ($game->nomonsters ?? false);
         foreach ($world->things as $mt) {
-            if ($mt->type === 14) {
-                $x = $mt->x * Defs::FRACUNIT;
-                $y = $mt->y * Defs::FRACUNIT;
-                $sec = Collision::pointInSubsector($world, $x, $y)->sector;
-                $world->mobjs[] = new self(
-                    x: $x,
-                    y: $y,
-                    z: $sec->floorheight,
-                    angle: Compat::asU32(intdiv($mt->angle, 45) * 0x20000000),
-                    radius: 20 * Defs::FRACUNIT,
-                    height: 16 * Defs::FRACUNIT,
-                    floorz: $sec->floorheight,
-                    ceilingz: $sec->ceilingheight,
-                    flags: 0,
-                    health: 1000,
-                    type: 14,
-                    sprite: '',
-                    info: ['teleport', null]
-                );
+            if ($mt->type === 11) {
                 continue;
             }
-            if (in_array($mt->type, [1, 2, 3, 4, 11, 87, 89, 88], true)
-                || !($mt->options & $bit)
-                || ($mt->options & 16)
-                || !isset($table[$mt->type])) {
+            if (in_array($mt->type, [1, 2, 3, 4], true)) {
+                if ($mt->type === 1 && $game !== null && $game->player === null) {
+                    $game->player = Player::spawnPlayer($world, $mt);
+                }
                 continue;
             }
-            [$sprite, $rad, $h, $health, $flags, $kind, $extra] = $table[$mt->type];
-            if ($kind === 'enemy' && $mt->type !== 2035) {
-                $flags |= Defs::MF_COUNTKILL;
+            if (!($mt->options & $bit) || ($mt->options & 16)) {
+                continue;
+            }
+            $typ = Info::mobjTypeForDoomednum($mt->type);
+            if ($typ < 0) {
+                continue;
+            }
+            Info::boot();
+            $flags = (int) Info::$liveMobjinfo[$typ][Info::MI_FLAGS];
+            if ($nomonsters && (($flags & Defs::MF_COUNTKILL) || $typ === Info::MT_SKULL)) {
+                continue;
+            }
+            $z = ($flags & Defs::MF_SPAWNCEILING) ? Thinker::ONCEILINGZ : Thinker::ONFLOORZ;
+            $mo = Thinker::spawnMobj($world, $mt->x * Defs::FRACUNIT, $mt->y * Defs::FRACUNIT, $z, $typ, $game);
+            if ($mo->tics > 0) {
+                $mo->tics = 1 + (Enemy::publicRandom() % $mo->tics);
+            }
+            $mo->angle = Compat::asU32(intdiv($mt->angle, 45) * 0x20000000);
+            $mo->spawnpoint = $mt;
+            if ($mt->options & Defs::MTF_AMBUSH) {
+                $mo->flags |= Defs::MF_AMBUSH;
+            }
+            if (isset($table[$mt->type])) {
+                [, , , , , $kind, $extra] = $table[$mt->type];
+                $mo->info = [$kind, $extra];
+            }
+            if ($mo->flags & Defs::MF_COUNTKILL) {
                 ++$kills;
-            } elseif (in_array($kind, ['bonus_h', 'bonus_a', 'soul', 'mega', 'berserk'], true)
-                || ($kind === 'item' && $extra !== 'Radiation shielding')) {
-                $flags |= Defs::MF_COUNTITEM;
+            }
+            if ($mo->flags & Defs::MF_COUNTITEM) {
                 ++$items;
             }
-            if ($mt->options & Defs::MTF_AMBUSH) {
-                $flags |= Defs::MF_AMBUSH;
-            }
-            $frame = (strlen($sprite) >= 5 && $sprite[4] >= 'A' && $sprite[4] <= ']')
-                ? ord($sprite[4]) - ord('A')
-                : 0;
-            $x = $mt->x * Defs::FRACUNIT;
-            $y = $mt->y * Defs::FRACUNIT;
-            $sec = Collision::pointInSubsector($world, $x, $y)->sector;
-            $world->mobjs[] = new self(
-                x: $x,
-                y: $y,
-                z: $sec->floorheight,
-                angle: Compat::asU32(intdiv($mt->angle, 45) * 0x20000000),
-                radius: $rad * Defs::FRACUNIT,
-                height: $h * Defs::FRACUNIT,
-                floorz: $sec->floorheight,
-                ceilingz: $sec->ceilingheight,
-                flags: $flags,
-                health: $health ?: 1000,
-                type: $mt->type,
-                sprite: substr(strtoupper($sprite), 0, 4),
-                info: [$kind, $extra],
-                aiState: $kind === 'enemy' ? 'look' : '',
-                frame: $frame,
-                tics: $kind === 'enemy' ? 10 : 0,
-                reactiontime: $kind === 'enemy' ? 8 : 0
-            );
         }
         return [$kills, $items];
     }
@@ -281,8 +290,16 @@ class Mobj
         if ($p === null || !$special->alive) {
             return;
         }
-        [$kind, $extra] = $special->info ?? ['deco', null];
+        $pickup = self::infoTable()[$special->doomednum] ?? null;
+        if ($special->info && $special->info[0]) {
+            [$kind, $extra] = $special->info;
+        } elseif ($pickup) {
+            [$kind, $extra] = [$pickup[5], $pickup[6]];
+        } else {
+            [$kind, $extra] = ['deco', null];
+        }
         $taken = true;
+        $sfx = 'itemup';
         if ($kind === 'health') {
             if ($p->health >= Defs::MAXHEALTH) {
                 $taken = false;
@@ -320,9 +337,14 @@ class Mobj
             $p->armortype = 2;
             $p->setMessage('MegaSphere!');
         } elseif ($kind === 'berserk') {
-            $p->health = max($p->health, 100);
-            $p->mo->health = $p->health;
-            $p->setMessage('Berserk!');
+            $taken = Player::givePower($p, Defs::PW_STRENGTH);
+            if ($taken) {
+                if ($p->readyweapon !== Defs::WP_FIST) {
+                    $p->pendingweapon = Defs::WP_FIST;
+                }
+                $p->setMessage('Berserk!');
+                $sfx = 'getpow';
+            }
         } elseif ($kind === 'key') {
             $p->cards[(int) $extra] = true;
             $names = [
@@ -375,13 +397,29 @@ class Mobj
             }
             $p->setMessage('You picked up a backpack full of ammo!');
         } elseif ($kind === 'item') {
-            $p->setMessage((string) $extra);
+            $powers = [
+                'Invulnerability' => [Defs::PW_INVULNERABILITY, 'Invulnerability!'],
+                'Partial invisibility' => [Defs::PW_INVISIBILITY, 'Partial Invisibility'],
+                'Radiation shielding' => [Defs::PW_IRONFEET, 'Radiation Shielding Suit'],
+                'Computer area map' => [Defs::PW_ALLMAP, 'Computer Area Map'],
+                'Light amplification visor' => [Defs::PW_INFRARED, 'Light Amplification Visor'],
+            ];
+            $pair = $powers[(string) $extra] ?? null;
+            if ($pair === null) {
+                $p->setMessage((string) $extra);
+            } else {
+                $taken = Player::givePower($p, $pair[0]);
+                if ($taken) {
+                    $p->setMessage($pair[1]);
+                    $sfx = 'getpow';
+                }
+            }
         } else {
             $taken = false;
         }
         if ($taken) {
             if ($kind !== 'weapon') {
-                $game->startSound('itemup');
+                $game->startSound($sfx);
             }
             $p->bonuscount += 6;
             if ($special->flags & Defs::MF_COUNTITEM) {

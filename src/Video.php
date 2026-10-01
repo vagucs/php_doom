@@ -37,6 +37,10 @@ final class Video
     private const SDL_QUIT = 0x100;
     private const SDL_KEYDOWN = 0x300;
     private const SDL_KEYUP = 0x301;
+    private const SDL_MOUSEMOTION = 0x400;
+    private const SDL_MOUSEBUTTONDOWN = 0x401;
+    private const SDL_MOUSEBUTTONUP = 0x402;
+    private const SDL_BUTTON_LEFT = 1;
     private const AUDIO_S16LSB = 0x8010;
 
     /** @var array<int,int> 320x200 PLAYPAL indices */
@@ -59,6 +63,7 @@ final class Video
     private int $fpsStamp = 0;
     /** @var list<int> remaining mixed s16 samples */
     private array $mix = [];
+    private bool $mouseGrab = false;
 
     public function init(bool $fullscreen = false, string $title = 'DOOM'): void
     {
@@ -83,6 +88,16 @@ final class Video
     public function ticksMs(): int
     {
         return $this->sdl !== null ? (int) $this->sdl->SDL_GetTicks() : (int) (microtime(true) * 1000);
+    }
+
+    public function setRelativeMouse(bool $on): void
+    {
+        if ($on === $this->mouseGrab || $this->sdl === null) {
+            return;
+        }
+        $this->mouseGrab = $on;
+        $this->sdl->SDL_SetRelativeMouseMode($on ? 1 : 0);
+        $this->sdl->SDL_ShowCursor($on ? 0 : 1);
     }
 
     public function toggleFullscreen(): void
@@ -179,7 +194,7 @@ final class Video
         }
     }
 
-    /** @return list<array{type:string,key?:int,sym?:int,repeat?:bool,mod?:int,text?:string}> */
+    /** @return list<array{type:string,key?:int,sym?:int,repeat?:bool,mod?:int,text?:string,dx?:int,dy?:int,button?:int}> */
     public function pollEvents(): array
     {
         $out = [];
@@ -191,6 +206,21 @@ final class Video
             $type = $event->type;
             if ($type === self::SDL_QUIT) {
                 $out[] = ['type' => 'quit'];
+                continue;
+            }
+            if ($type === self::SDL_MOUSEMOTION) {
+                $out[] = [
+                    'type' => 'mousemotion',
+                    'dx' => (int) $event->motion->xrel,
+                    'dy' => (int) $event->motion->yrel,
+                ];
+                continue;
+            }
+            if ($type === self::SDL_MOUSEBUTTONDOWN || $type === self::SDL_MOUSEBUTTONUP) {
+                $out[] = [
+                    'type' => $type === self::SDL_MOUSEBUTTONDOWN ? 'mousedown' : 'mouseup',
+                    'button' => (int) $event->button->button,
+                ];
                 continue;
             }
             if ($type !== self::SDL_KEYDOWN && $type !== self::SDL_KEYUP) {
@@ -403,6 +433,7 @@ const char *SDL_GetError(void);
 Uint32 SDL_GetTicks(void);
 void SDL_Delay(Uint32 ms);
 int SDL_ShowCursor(int toggle);
+int SDL_SetRelativeMouseMode(int enabled);
 
 typedef struct SDL_Window SDL_Window;
 typedef struct SDL_Renderer SDL_Renderer;
@@ -444,9 +475,36 @@ typedef struct SDL_KeyboardEvent {
     SDL_Keysym keysym;
 } SDL_KeyboardEvent;
 
+typedef struct SDL_MouseMotionEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    Uint32 windowID;
+    Uint32 which;
+    Uint32 state;
+    Sint32 x;
+    Sint32 y;
+    Sint32 xrel;
+    Sint32 yrel;
+} SDL_MouseMotionEvent;
+
+typedef struct SDL_MouseButtonEvent {
+    Uint32 type;
+    Uint32 timestamp;
+    Uint32 windowID;
+    Uint32 which;
+    Uint8 button;
+    Uint8 state;
+    Uint8 clicks;
+    Uint8 padding1;
+    Sint32 x;
+    Sint32 y;
+} SDL_MouseButtonEvent;
+
 typedef union SDL_Event {
     Uint32 type;
     SDL_KeyboardEvent key;
+    SDL_MouseMotionEvent motion;
+    SDL_MouseButtonEvent button;
     Uint8 padding[56];
 } SDL_Event;
 

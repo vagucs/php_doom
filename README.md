@@ -14,7 +14,9 @@ By **Wagner Nunes da Silva**
 - [www.vagucs.com.br](https://www.vagucs.com.br)
 - [LinkedIn](https://www.linkedin.com/in/wagner-nunes-da-silva-b0a15360)
 
-This tree is a port of **[harbour_doom](https://github.com/vagucs/harbour_doom)** (`doom_hb`): the same Chocolate Doom / doomgeneric engine that first went from C to Harbour, then to Python (`doom_python`), now from Harbour to PHP.
+Same engine in other languages: [harbour_doom](https://github.com/vagucs/harbour_doom) · [python_doom](https://github.com/vagucs/python_doom) · [php_doom](https://github.com/vagucs/php_doom) · [node_doom](https://github.com/vagucs/node_doom) · [java_doom](https://github.com/vagucs/java_doom)
+
+This tree is a port of **[harbour_doom](https://github.com/vagucs/harbour_doom)** (`doom_hb`): the same Chocolate Doom / doomgeneric engine that first went from C to Harbour, then to [Python](https://github.com/vagucs/python_doom), now from Harbour to PHP.
 
 Versão em português: [README.pt.md](README.pt.md)
 
@@ -39,7 +41,6 @@ Not in this tree (same cut as Harbour `boot.prg`):
 
 - Network, CD music, joystick
 - `-colors` palette quantize (Harbour-only experiment)
-- Demo playback, full vanilla `info` state tables
 
 ---
 
@@ -51,7 +52,7 @@ The Harbour port taught how to read C in another language. The Python port dropp
 
 What it is meant to teach:
 
-- **Four languages, one engine.** C (`base_c/` in harbour_doom) → Harbour (`.prg`) → Python (`doom_python`) → PHP (`php_doom/src`). Same names (`P_Thrust`, `R_DrawColumn`, `A_Look`) so you can open the four versions side by side.
+- **Six languages, one engine.** C (`base_c/` in harbour_doom) → Harbour ([harbour_doom](https://github.com/vagucs/harbour_doom)) → Python ([python_doom](https://github.com/vagucs/python_doom)) → PHP ([php_doom](https://github.com/vagucs/php_doom)) → TypeScript ([node_doom](https://github.com/vagucs/node_doom)) → Java ([java_doom](https://github.com/vagucs/java_doom)). Same names (`P_Thrust`, `R_DrawColumn`, `A_Look`) so you can open the versions side by side.
 - **What pointers were doing.** PHP uses objects and arrays; wrap-around, BAM angles and 16.16 overflow stay explicit (`Compat::asU32`, `shar`, `fixedMul`) because PHP integers do not wrap at 32 bits. Products that overflow `int` must not go through `intdiv()`.
 - **Where an interpreter is enough.** The whole game runs in PHP CLI. SDL2 is only the window, input, and PCM queue. FFI is the native boundary, like Allegro was in Harbour.
 - **CLI, not HTTP.** `PHP_SAPI` must be `cli`. There is no browser canvas and no web server.
@@ -69,24 +70,26 @@ Suggested way to study:
 
 ## From C / Harbour / Python to PHP
 
-PHP arrays are 0-based, like C and the Python port. Harbour arrays were 1-based; that offset is gone here.
+PHP arrays are 0-based, like C, Python, Node and Java. Harbour arrays were 1-based; that offset is gone here.
 
-| DOOM in C | Harbour | Python | PHP |
-|---|---|---|---|
-| `struct` / `typedef struct` | `CLASS ... DATA` | `@dataclass` | `class` + typed properties |
-| `thing->x` | `thing:x` | `thing.x` | `$thing->x` |
-| `NULL` | `NIL` | `None` | `null` |
-| `array[0]` | `array[1]` | `array[0]` | `$array[0]` |
-| `&`, `\|`, `^` | `hb_qbitAnd/Or/Xor` | `&`, `\|`, `^` | `&`, `\|`, `^` |
-| `x >> n` unsigned | `UShr(x, n)` | `ushr(x, n)` | `Compat::ushr($x, $n)` |
-| `x >> n` signed | `Shar(x, n)` | `shar(x, n)` | `Compat::shar($x, $n)` |
-| 32-bit wrap | `AsU32` / `AsInt32` | `as_u32` / `as_i32` | `Compat::asU32` / `asI32` |
-| `fixed_t` 16.16 | `FixedMul` / `FixedDiv` | `fixed_mul` / `fixed_div` | `Compat::fixedMul` / `fixedDiv` |
-| `byte *` framebuffer | Harbour string | `bytearray` + numpy LUT | `array<int>` of 64000 + SDL ARGB8888 |
-| Allegro 4.2.2 | GTALLEG / llibg | pygame | SDL2 via FFI |
-| `Z_Malloc` | GC | GC | GC |
-| `PUBLIC` globals | `PUBLIC` / `MEMVAR` | fields on `Game` | public fields on `Game` |
-| 100+ `.prg` files | 1:1 with C | condensed `doom/*.py` | condensed `src/*.php` |
+The table below is the same six-language comparison used in every `*_doom` README:
+
+| DOOM in C                   | [Harbour](https://github.com/vagucs/harbour_doom) | [Python](https://github.com/vagucs/python_doom) | [PHP](https://github.com/vagucs/php_doom) | [Node](https://github.com/vagucs/node_doom) | [Java](https://github.com/vagucs/java_doom) |
+| --------------------------- | ------------------------------------------------- | ----------------------------------------------- | ---------------------------------------- | ------------------------------------------- | ------------------------------------------- |
+| `struct` / `typedef struct` | `CLASS ... DATA`                                  | `@dataclass`                                    | `class` + typed properties               | `class` + typed fields                      | `class` + fields                            |
+| `thing->x`                  | `thing:x`                                         | `thing.x`                                       | `$thing->x`                              | `thing.x`                                   | `thing.x`                                   |
+| `NULL`                      | `NIL`                                             | `None`                                          | `null`                                   | `null`                                      | `null`                                      |
+| `array[0]`                  | `array[1]`                                        | `array[0]`                                      | `$array[0]`                              | `array[0]`                                  | `array[0]`                                  |
+| `&`, `|`, `^`               | `hb_qbitAnd/Or/Xor`                               | `&`, `|`, `^`                                   | `&`, `|`, `^`                            | `&`, `|`, `^`                               | `&`, `|`, `^`                               |
+| `x >> n` unsigned           | `UShr(x, n)`                                      | `ushr(x, n)`                                    | `Compat::ushr($x, $n)`                   | `ushr(x, n)`                                | `Compat.ushr` / `>>>`                       |
+| `x >> n` signed             | `Shar(x, n)`                                      | `shar(x, n)`                                    | `Compat::shar($x, $n)`                   | `shar(x, n)`                                | `Compat.shar` / `>>`                        |
+| 32-bit wrap                 | `AsU32` / `AsInt32`                               | `as_u32` / `as_i32`                             | `Compat::asU32` / `asI32`                | `asU32` / `asI32`                           | `int` already wraps                         |
+| `fixed_t` 16.16             | `FixedMul` / `FixedDiv`                           | `fixed_mul` / `fixed_div`                       | `Compat::fixedMul` / `fixedDiv`          | `fixedMul` / `fixedDiv` (BigInt)            | `fixedMul` / `fixedDiv` (`long`)            |
+| `byte *` framebuffer        | Harbour string                                    | `bytearray` + numpy LUT                         | `array<int>` + SDL ARGB8888              | `Uint8Array` + SDL ARGB8888                 | `int[]` + SDL ARGB8888                      |
+| Allegro 4.2.2               | GTALLEG / llibg                                   | pygame                                          | SDL2 via FFI                             | SDL2 via koffi                              | SDL2 via JNA                                |
+| `Z_Malloc`                  | GC                                                | GC                                              | GC                                       | GC                                          | GC                                          |
+| `PUBLIC` globals            | `PUBLIC` / `MEMVAR`                               | fields on `Game`                                | public fields on `Game`                  | public fields on `Game`                     | public fields on `Game`                     |
+| 100+ `.prg` files           | 1:1 with C                                        | condensed `doom/*.py`                           | condensed `src/*.php`                    | condensed `src/*.ts`                        | condensed `src/doom/*.java`                 |
 
 ### Side-by-side: `P_Thrust`
 
@@ -164,7 +167,7 @@ Typical blit rate on the same PC (320×200, windowed, shareware IWAD). The game 
 | Port | Typical FPS |
 |---|---|
 | Harbour (`doom_hb`) | ~12 |
-| Python (`doom_python`) | ~8 |
+| Python (`python_doom`) | ~8 |
 | PHP (`php_doom`) | ~20 |
 | Node (`node_doom`) | ~100 |
 | Java (`java_doom`) | ~180 (vsync-locked) |
@@ -231,7 +234,7 @@ Movement is **arrow keys only** (no WASD), so letter keys stay free for cheat co
 
 ### Cheats (nostalgia only)
 
-Type these on the keyboard during play; no Enter needed:
+Type these on the keyboard during play; no Enter needed. On Nightmare skill only **IDCLEV** and **IDDT** work (vanilla).
 
 | Code | Effect |
 |---|---|
@@ -240,6 +243,11 @@ Type these on the keyboard during play; no Enter needed:
 | **IDFA** | Weapons, ammo, and armor (no keys) |
 | **IDCLIP** / **IDSPISPOPD** | No clipping |
 | **IDDT** | Automap cheat (type while the map is open): all walls, then things |
+| **IDBEHOLD** | Lists power-ups; then **V** invulnerability, **S** berserk, **I** invisibility, **R** radiation suit, **A** computer map, **L** light visor |
+| **IDCHOPPERS** | Chainsaw |
+| **IDMYPOS** | Print angle and coordinates |
+| **IDCLEV** + 2 digits | Warp (`11` = E1M1 or MAP11) |
+| **IDMUS** + 2 digits | Change music (`11` = E1M1 / MAP11 track) |
 
 ---
 
@@ -267,8 +275,18 @@ Type these on the keyboard during play; no Enter needed:
 | `-warp e m` | Skip the title and start episode `e` map `m` |
 | `-skill n` | 0 baby … 4 nightmare (default 2, Hurt Me Plenty) |
 | `-nomonsters` | Do not spawn enemies |
+| `-fast` | Faster monsters (vanilla `-fast`) |
+| `-respawn` | Nightmare-style respawn |
+| `-file wad [wad…]` | Extra PWADs after the IWAD |
+| `-record name` | Record a demo to `name.lmp` |
+| `-playdemo name` | Play a lump or `.lmp` file, then quit |
+| `-timedemo name` | Playback as fast as possible and print FPS |
+| `-nosound` | Disable SFX and music |
+| `-nomusic` | Disable music only |
 
-Harbour-only flags **not** implemented here: `-videoc`, `-scaling`, `-gfxmode`, `-colors`, `-nosound` / `-nosfx` / `-nomusic`, `-config`, net/CD/joystick.
+`default.cfg` in the working directory stores `mouse_sensitivity`, `sfx_volume`, `music_volume`, `show_messages`, `use_mouse`, `screenblocks`. Mouse look/walk uses SDL2 relative motion when `use_mouse` is on. Saves stay JSON (vanilla binary save is not used).
+
+Harbour-only flags **not** implemented here: `-videoc`, `-scaling`, `-gfxmode`, `-colors`, net/CD/joystick.
 
 ---
 
@@ -312,7 +330,8 @@ docs/                donation QR codes
 | `src/Saveg.php` | `p_saveg` (24-byte name + JSON) |
 | `src/WiStuff.php` | `wi_stuff` |
 | `src/Wipe.php` | `f_wipe` melt |
-| `src/Finale.php` | `f_finale` (text + bunny scroll) |
+| `src/Finale.php` | `f_finale` |
+| `src/Config.php` | `m_misc` default.cfg |
 | `src/Game.php` | `d_main` `g_game` `d_loop` `boot` |
 
 ---
@@ -322,8 +341,10 @@ docs/                donation QR codes
 1. **id Software DOOM** (1993) — original engine
 2. **Chocolate Doom / doomgeneric** — portable C
 3. **[harbour_doom](https://github.com/vagucs/harbour_doom)** — Harbour + Allegro 4.2.2 (`Doom_hb.exe`)
-4. **doom_python** — Python + pygame, from that Harbour port
-5. **This tree** — PHP 8 CLI + SDL2 FFI, sourced from the same Harbour gameplay (100% of gameplay intent from the `.prg` files; condensed file count)
+4. **[python_doom](https://github.com/vagucs/python_doom)** — Python + pygame
+5. **[php_doom](https://github.com/vagucs/php_doom)** — PHP 8 CLI + SDL2 FFI (this tree)
+6. **[node_doom](https://github.com/vagucs/node_doom)** — Node.js CLI + TypeScript + SDL2 (koffi)
+7. **[java_doom](https://github.com/vagucs/java_doom)** — Java 17 CLI + SDL2 (JNA)
 
 ---
 
