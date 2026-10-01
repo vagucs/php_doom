@@ -219,13 +219,6 @@ final class Deh
     public function loadAfterIwad(Wad $wad, string $iwadPath): void
     {
         if (!$this->nodeh) {
-            $base = strtolower(pathinfo($iwadPath, PATHINFO_FILENAME));
-            if (str_starts_with($base, 'chex')) {
-                $sibling = dirname($iwadPath) . DIRECTORY_SEPARATOR . 'chex.deh';
-                if (is_file($sibling)) {
-                    $this->loadFile($sibling);
-                }
-            }
             foreach ($wad->lumps as $i => $lump) {
                 if ($lump->name === 'DEHACKED') {
                     $this->loadLump($wad, $i);

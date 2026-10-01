@@ -105,6 +105,17 @@ final class Sprites
                 }
             }
             if ($maxFrame >= 0) {
+                for ($frameIndex = 0; $frameIndex <= $maxFrame; ++$frameIndex) {
+                    $slot = $frames[$frameIndex];
+                    if ($slot->rotate === -1) {
+                        fwrite(
+                            STDERR,
+                            'R_InitSprites: No patches found for ' . $spriteName
+                            . ' frame ' . chr(ord('A') + $frameIndex) . "\n"
+                        );
+                        $slot->rotate = 0;
+                    }
+                }
                 $result[$spriteName] = array_slice($frames, 0, $maxFrame + 1);
             }
         }
