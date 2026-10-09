@@ -368,7 +368,7 @@ final class Player
             Defs::WP_SHOTGUN => [['SHTGA0', 3, 0, '', 0, 0], ['SHTGA0', 7, 1, 'SHTFA0', 7, 1], ['SHTGB0', 5, 0, '', 0, 0], ['SHTGC0', 5, 0, '', 0, 0], ['SHTGD0', 4, 0, '', 0, 0], ['SHTGC0', 5, 0, '', 0, 0], ['SHTGB0', 5, 0, '', 0, 0], ['SHTGA0', 3, 0, '', 0, 0], ['SHTGA0', 7, 0, '', 0, 0]],
             Defs::WP_CHAINGUN => [['CHGGA0', 4, 1, 'CHGFA0', 5, 1], ['CHGGB0', 4, 1, 'CHGFB0', 5, 2]],
             Defs::WP_MISSILE => [['MISGB0', 8, 0, 'MISFA0', 15, 1], ['MISGB0', 12, 1, '', 0, 2]],
-            Defs::WP_PLASMA => [['PLSGA0', 3, 1, 'PLSFA0', 4, 1], ['PLSGB0', 20, 0, '', 0, 0]],
+            Defs::WP_PLASMA => [['PLSGA0', 3, 1, 'PLSFA0', 4, 1], ['PLSGB0', 20, 0, '', 0, 0, true]],
             Defs::WP_BFG => [['BFGGA0', 20, 0, '', 0, 0], ['BFGGB0', 10, 0, 'BFGFA0', 17, 1], ['BFGGB0', 10, 1, '', 0, 2], ['BFGGB0', 20, 0, '', 0, 0]],
             Defs::WP_CHAINSAW => [['SAWGA0', 4, 1, '', 0, 0], ['SAWGB0', 4, 1, '', 0, 0]],
             Defs::WP_SUPERSHOTGUN => [['SHT2A0', 3, 0, '', 0, 0], ['SHT2A0', 7, 1, 'SHT2I0', 9, 1], ['SHT2B0', 7, 0, '', 0, 0], ['SHT2C0', 7, 0, '', 0, 0], ['SHT2D0', 7, 0, '', 0, 0], ['SHT2E0', 7, 0, '', 0, 0], ['SHT2F0', 7, 0, '', 0, 0], ['SHT2G0', 6, 0, '', 0, 0], ['SHT2H0', 6, 0, '', 0, 0], ['SHT2A0', 5, 0, '', 0, 0]],
@@ -530,7 +530,13 @@ final class Player
                 }
                 return;
             }
-            [$body, $tics, $fire, $flash, $ft, $light] = $seq[$p->pspriteStep];
+            $step = $seq[$p->pspriteStep];
+            [$body, $tics, $fire, $flash, $ft, $light] = $step;
+            // A_ReFire runs when the state is entered. Held fire skips the cooldown.
+            if (!empty($step[6]) && $firing && $can && $p->pendingweapon === Defs::WP_NOCHANGE && $p->health > 0) {
+                $p->pspriteStep = 0;
+                continue;
+            }
             $p->pspriteBody = $body;
             $p->pspriteTics = $tics;
             if ($ft) {
@@ -582,8 +588,8 @@ final class Player
         $hit = false;
         if ($mo && in_array($weapon, [Defs::WP_MISSILE, Defs::WP_PLASMA, Defs::WP_BFG], true)) {
             if ($weapon === Defs::WP_PLASMA) {
-                $plasma = Enemy::publicRandom() & 1;
-                unset($plasma);
+                $p->pspriteFlash = (Enemy::publicRandom() & 1) !== 0 ? 'PLSFB0' : 'PLSFA0';
+                $p->flashTics = 4;
             }
             if ($weapon === Defs::WP_MISSILE) {
                 Enemy::spawnPlayerMissile($game->world, $mo, 'MISL', 20 * Defs::FRACUNIT, 20, 'rocket');

@@ -245,9 +245,6 @@ final class Collision
             return false;
         }
         if ($tm->flags & Defs::MF_MISSILE) {
-            if ($tm->z > $other->z + $other->height || $tm->z + $tm->height < $other->z) {
-                return true;
-            }
             $target = $tm->target;
             if ($target !== null && self::sameSpecies($target, $other)) {
                 if ($other === $target) {
@@ -260,8 +257,8 @@ final class Collision
             if (($other->flags & Defs::MF_SHOOTABLE) === 0) {
                 return ($other->flags & Defs::MF_SOLID) === 0;
             }
-            if ($game !== null) {
-                $game->damageMobj($other, $target ?? $tm, ((Enemy::publicRandom() % 8) + 1) * ($tm->damage ?: 0), $tm);
+            if (!Enemy::missileReaches($tm, $other, $tm->tmx, $tm->tmy, $tm->z)) {
+                return true;
             }
             return false;
         }
@@ -894,15 +891,27 @@ final class Collision
 
     public static function bulletSlope(World $world, Mobj $source): int
     {
+        return self::missileAim($world, $source)['slope'];
+    }
+
+    /**
+     * P_SpawnPlayerMissile: aim straight, then a step left and right.
+     * The angle that finds the target is the one the missile flies.
+     *
+     * @return array{angle:int,slope:int}
+     */
+    public static function missileAim(World $world, Mobj $source): array
+    {
         $base = $source->angle;
         $span = 16 * 64 * Defs::FRACUNIT;
-        foreach ([$base, Compat::asU32($base + (1 << 26)), Compat::asU32($base - (1 << 26))] as $ang) {
+        $shifted = Compat::asU32($base + (1 << 26));
+        foreach ([$base, $shifted, Compat::asU32($shifted - (2 << 26))] as $ang) {
             $aimed = self::aim($world, $source, $ang, $span);
             if ($aimed['target'] !== null) {
-                return $aimed['slope'];
+                return ['angle' => $ang, 'slope' => $aimed['slope']];
             }
         }
-        return 0;
+        return ['angle' => $base, 'slope' => 0];
     }
 
     public static function lineAttack(
@@ -1052,6 +1061,7 @@ final class Collision
         return self::aim($world, $source, $angle, $range)['target'];
     }
 
+    /** P_CheckSight: REJECT, then the BSP, closing the vertical window at each opening. */
     public static function checkSight(World $world, Mobj $a, Mobj $b): bool
     {
         $s1 = self::pointInSubsector($world, $a->x, $a->y)->sector;
@@ -1065,22 +1075,135 @@ final class Collision
                 return false;
             }
         }
-        if ($s1 === $s2) {
-            return true;
+        $eye = $a->z + $a->height - ($a->height >> 2);
+        $st = [
+            'top' => ($b->z + $b->height) - $eye,
+            'bottom' => $b->z - $eye,
+            'z' => $eye,
+            'x' => $a->x,
+            'y' => $a->y,
+            'dx' => Compat::asI32($b->x - $a->x),
+            'dy' => Compat::asI32($b->y - $a->y),
+            't2x' => $b->x,
+            't2y' => $b->y,
+        ];
+        ++$world->validcount;
+        if ($world->numnodes === 0) {
+            return self::crossSightSubsector($world, 0, $st);
         }
-        foreach ($world->lines as $ln) {
-            if ($ln->backsector !== null) {
-                [$top, $bottom] = self::lineOpening($ln);
-                if ($top - $bottom > 0) {
-                    continue;
+        return self::crossSightBsp($world, $world->numnodes - 1, $st);
+    }
+
+    /** P_DivlineSide. 2 means the point is on the line. */
+    private static function sightSide(int $x, int $y, int $lx, int $ly, int $ldx, int $ldy): int
+    {
+        $dx = Compat::shar($x - $lx, Defs::FRACBITS);
+        $dy = Compat::shar($y - $ly, Defs::FRACBITS);
+        $left = Compat::asI32(Compat::shar($ldy, Defs::FRACBITS) * $dx);
+        $right = Compat::asI32($dy * Compat::shar($ldx, Defs::FRACBITS));
+        if ($right < $left) {
+            return 0;
+        }
+        if ($left === $right) {
+            return 2;
+        }
+        return 1;
+    }
+
+    /** @param array{top:int,bottom:int,z:int,x:int,y:int,dx:int,dy:int,t2x:int,t2y:int} $st */
+    private static function crossSightSubsector(World $world, int $num, array &$st): bool
+    {
+        if ($num < 0 || $num >= count($world->subsectors)) {
+            $num = 0;
+        }
+        $sub = $world->subsectors[$num];
+        $nSeg = $sub->firstline;
+        for ($count = $sub->numlines; $count > 0; --$count, ++$nSeg) {
+            $seg = $world->segs[$nSeg] ?? null;
+            $line = $seg?->linedef;
+            if ($seg === null || $line === null || $line->v1 === null || $line->v2 === null) {
+                continue;
+            }
+            if ($line->validcount === $world->validcount) {
+                continue;
+            }
+            $line->validcount = $world->validcount;
+            $s1 = self::sightSide($line->v1->x, $line->v1->y, $st['x'], $st['y'], $st['dx'], $st['dy']);
+            $s2 = self::sightSide($line->v2->x, $line->v2->y, $st['x'], $st['y'], $st['dx'], $st['dy']);
+            if ($s1 === $s2) {
+                continue;
+            }
+            $ldx = Compat::asI32($line->v2->x - $line->v1->x);
+            $ldy = Compat::asI32($line->v2->y - $line->v1->y);
+            $s1 = self::sightSide($st['x'], $st['y'], $line->v1->x, $line->v1->y, $ldx, $ldy);
+            $s2 = self::sightSide($st['t2x'], $st['t2y'], $line->v1->x, $line->v1->y, $ldx, $ldy);
+            if ($s1 === $s2) {
+                continue;
+            }
+            if ($line->backsector === null || ($line->flags & Defs::ML_TWOSIDED) === 0) {
+                return false;
+            }
+            $front = $seg->frontsector;
+            $back = $seg->backsector;
+            if ($front === null || $back === null) {
+                return false;
+            }
+            if ($front->floorheight === $back->floorheight && $front->ceilingheight === $back->ceilingheight) {
+                continue;
+            }
+            $opentop = min($front->ceilingheight, $back->ceilingheight);
+            $openbottom = max($front->floorheight, $back->floorheight);
+            if ($openbottom >= $opentop) {
+                return false;
+            }
+            $frac = self::interceptVector(
+                new DivLine($st['x'], $st['y'], $st['dx'], $st['dy']),
+                new DivLine($line->v1->x, $line->v1->y, $ldx, $ldy)
+            );
+            if ($front->floorheight !== $back->floorheight) {
+                $slope = Compat::fixedDiv($openbottom - $st['z'], $frac);
+                if ($slope > $st['bottom']) {
+                    $st['bottom'] = $slope;
                 }
             }
-            $f = self::interceptFrac($a->x, $a->y, $b->x, $b->y, $ln);
-            if ($f !== null && $f > intdiv(Defs::FRACUNIT, 64) && $f < Defs::FRACUNIT - intdiv(Defs::FRACUNIT, 64)) {
+            if ($front->ceilingheight !== $back->ceilingheight) {
+                $slope = Compat::fixedDiv($opentop - $st['z'], $frac);
+                if ($slope < $st['top']) {
+                    $st['top'] = $slope;
+                }
+            }
+            if ($st['top'] <= $st['bottom']) {
                 return false;
             }
         }
         return true;
+    }
+
+    /** @param array{top:int,bottom:int,z:int,x:int,y:int,dx:int,dy:int,t2x:int,t2y:int} $st */
+    private static function crossSightBsp(World $world, int $bspnum, array &$st): bool
+    {
+        if (($bspnum & Defs::NF_SUBSECTOR) !== 0 || $bspnum < 0) {
+            if (($bspnum & 0xFFFF) === 0xFFFF) {
+                return self::crossSightSubsector($world, 0, $st);
+            }
+            return self::crossSightSubsector($world, $bspnum & 0x7FFF, $st);
+        }
+        $node = $world->nodes[$bspnum] ?? null;
+        if ($node === null) {
+            return true;
+        }
+        $side = self::sightSide($st['x'], $st['y'], $node->x, $node->y, $node->dx, $node->dy);
+        if ($side === 2) {
+            $side = 0;
+        }
+        if (!self::crossSightBsp($world, $node->children[$side], $st)) {
+            return false;
+        }
+        $other = self::sightSide($st['t2x'], $st['t2y'], $node->x, $node->y, $node->dx, $node->dy);
+        if ($side === $other) {
+            return true;
+        }
+        return self::crossSightBsp($world, $node->children[$side ^ 1], $st);
     }
 
     /** P_ThingHeightClip: ride a moving floor / squeeze under a moving ceiling. */

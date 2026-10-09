@@ -778,7 +778,8 @@ final class Enemy
             'plasma' => Info::MT_PLASMA,
             default => Info::MT_BFG,
         };
-        $ang = $src->angle;
+        $aim = Collision::missileAim($world, $src);
+        $ang = $aim['angle'];
         Info::boot();
         $spd = (int) Info::$liveMobjinfo[$typ][Info::MI_SPEED];
         $mo = Thinker::spawnMobj($world, $src->x, $src->y, $src->z + 32 * Defs::FRACUNIT, $typ, null);
@@ -786,7 +787,7 @@ final class Enemy
         $mo->angle = $ang;
         $mo->momx = Compat::fixedMul($spd, Tables::fineCos($ang));
         $mo->momy = Compat::fixedMul($spd, Tables::fineSin($ang));
-        $mo->momz = 0;
+        $mo->momz = Compat::fixedMul($spd, $aim['slope']);
         $mo->missileKind = $kind;
         self::checkMissileSpawn($mo);
     }
@@ -1324,7 +1325,7 @@ final class Enemy
                 $mo->momz = -$mo->momz;
             }
             if (($mo->flags & Defs::MF_MISSILE) && !($mo->flags & Defs::MF_NOCLIP)) {
-                self::explodeMissile($world, $mo, $game, null);
+                self::missileFloorHit($world, $mo, $game);
                 return;
             }
         } elseif (!($mo->flags & Defs::MF_NOGRAVITY)) {
@@ -1343,17 +1344,75 @@ final class Enemy
                 $mo->momz = -$mo->momz;
             }
             if (($mo->flags & Defs::MF_MISSILE) && !($mo->flags & Defs::MF_NOCLIP)) {
-                self::explodeMissile($world, $mo, $game, null);
+                self::missileFloorHit($world, $mo, $game);
             }
         }
     }
 
+    /**
+     * The shot reached the raised floor under the monster after the XY test
+     * had already missed. Check again at the snapped height, then explode.
+     */
+    private static function missileFloorHit(World $world, Mobj $mo, object $game): void
+    {
+        self::explodeMissile($world, $mo, $game, null);
+    }
+
+    /** The blast reached this body, including a shot that died on the floor under it. */
+    public static function missileReaches(Mobj $mo, Mobj $other, int $x, int $y, int $z): bool
+    {
+        if ($other === $mo || $other === $mo->target || $other->health <= 0) {
+            return false;
+        }
+        if (($other->flags & Defs::MF_SHOOTABLE) === 0) {
+            return false;
+        }
+        $reach = $other->radius + $mo->radius;
+        if (abs($other->x - $x) >= $reach || abs($other->y - $y) >= $reach) {
+            return false;
+        }
+        $slack = 64 * Defs::FRACUNIT;
+        $z0 = $z;
+        $z1 = $z + $mo->momz;
+        $low = min($z0, $z1) - $slack;
+        $high = max($z0, $z1) + $mo->height + $slack;
+        if ($z <= $mo->floorz) {
+            $low = min($low, $mo->floorz - $slack);
+            $high = max($high, $mo->floorz + $slack);
+        }
+        return $low <= $other->z + $other->height && $high >= $other->z;
+    }
+
+    private static function missileVictim(World $world, Mobj $mo): ?Mobj
+    {
+        $spots = [[$mo->x, $mo->y, $mo->z]];
+        if ($mo->tmx !== $mo->x || $mo->tmy !== $mo->y) {
+            $spots[] = [$mo->tmx, $mo->tmy, $mo->z];
+        }
+        $best = null;
+        $bestDist = PHP_INT_MAX;
+        foreach ($world->mobjs as $other) {
+            foreach ($spots as [$x, $y, $z]) {
+                if (!self::missileReaches($mo, $other, $x, $y, $z)) {
+                    continue;
+                }
+                $dist = max(abs($other->x - $x), abs($other->y - $y));
+                if ($dist < $bestDist) {
+                    $bestDist = $dist;
+                    $best = $other;
+                }
+            }
+        }
+        return $best;
+    }
+
     private static function explodeMissile(World $world, Mobj $mo, object $game, ?Mobj $hit): void
     {
+        $hit = $hit ?? self::missileVictim($world, $mo);
         if ($hit) {
-            $src = $mo->target ?? $mo;
+            Info::boot();
             $dmg = $mo->damage ?: (int) Info::$liveMobjinfo[$mo->type][Info::MI_DAMAGE];
-            $game->damageMobj($hit, $src, $dmg * (self::random() % 8 + 1), $mo);
+            $game->damageMobj($hit, $mo->target ?? $mo, $dmg * ((self::random() % 8) + 1), $mo);
         }
         $mo->momx = $mo->momy = $mo->momz = 0;
         $mo->flags &= ~Defs::MF_MISSILE;

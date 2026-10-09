@@ -444,14 +444,43 @@ final class Specials
         return $ok;
     }
 
+    private function lockedBlazeDoor(Line $line, Mobj $thing, int $sp): void
+    {
+        $p = $thing->player;
+        if (!$p) {
+            return;
+        }
+        if ($sp === 99 || $sp === 133) {
+            $card = Defs::IT_BLUECARD;
+            $skull = Defs::IT_BLUESKULL;
+            $name = 'blue';
+        } elseif ($sp === 134 || $sp === 135) {
+            $card = Defs::IT_REDCARD;
+            $skull = Defs::IT_REDSKULL;
+            $name = 'red';
+        } else {
+            $card = Defs::IT_YELLOWCARD;
+            $skull = Defs::IT_YELLOWSKULL;
+            $name = 'yellow';
+        }
+        if (!($p->cards[$card] || $p->cards[$skull])) {
+            $p->message = "You need a $name key to open this door";
+            $this->sound->play('oof');
+            return;
+        }
+        if ($this->doDoor($line, Defs::VLD_BLAZEOPEN)) {
+            $this->changeSwitch($line, ($sp === 99 || $sp === 134 || $sp === 136) ? 1 : 0);
+        }
+    }
+
     public function verticalDoor(Line $line, Mobj $thing): void
     {
         $p = $thing->player;
         $sp = $line->special;
         $locks = [
-            [[26, 32, 99, 133], Defs::IT_BLUECARD, Defs::IT_BLUESKULL, 'blue'],
-            [[27, 34, 136, 137], Defs::IT_YELLOWCARD, Defs::IT_YELLOWSKULL, 'yellow'],
-            [[28, 33, 134, 135], Defs::IT_REDCARD, Defs::IT_REDSKULL, 'red'],
+            [[26, 32], Defs::IT_BLUECARD, Defs::IT_BLUESKULL, 'blue'],
+            [[27, 34], Defs::IT_YELLOWCARD, Defs::IT_YELLOWSKULL, 'yellow'],
+            [[28, 33], Defs::IT_REDCARD, Defs::IT_REDSKULL, 'red'],
         ];
         foreach ($locks as [$nums, $card, $skull, $name]) {
             if (in_array($sp, $nums, true) && $p && !($p->cards[$card] || $p->cards[$skull])) {
@@ -471,7 +500,7 @@ final class Specials
             $line->special = 0;
         } elseif ($sp === 117) {
             $type = Defs::VLD_BLAZERAISE;
-        } elseif (in_array($sp, [118, 99, 133, 134, 135, 136, 137], true)) {
+        } elseif ($sp === 118) {
             $type = Defs::VLD_BLAZEOPEN;
             $line->special = 0;
         } else {
@@ -1011,8 +1040,12 @@ final class Specials
             return;
         }
         $sp = $line->special;
-        if (in_array($sp, [1, 26, 27, 28, 31, 32, 33, 34, 99, 117, 118, 133, 134, 135, 136, 137], true)) {
+        if (in_array($sp, [1, 26, 27, 28, 31, 32, 33, 34, 117, 118], true)) {
             $this->verticalDoor($line, $thing);
+            return;
+        }
+        if (in_array($sp, [99, 133, 134, 135, 136, 137], true)) {
+            $this->lockedBlazeDoor($line, $thing, $sp);
             return;
         }
         if ($sp === 11 || $sp === 51) {
@@ -1036,7 +1069,7 @@ final class Specials
             23 => fn () => $this->doFloor($line, [self::class, 'lowestFloor'], -1),
             71 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1),
             101 => fn () => $this->doFloor($line, fn ($s) => self::nextHighestFloor($s, $s->floorheight), 1),
-            102 => fn () => $this->doFloor($line, fn ($s) => $s->floorheight - 8 * Defs::FRACUNIT, -1),
+            102 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1),
             7 => fn () => $this->doStairs($line, 8 * Defs::FRACUNIT, intdiv(Defs::FLOORSPEED, 4)),
             127 => fn () => $this->doStairs($line, 16 * Defs::FRACUNIT, Defs::FLOORSPEED * 4),
             41 => fn () => $this->doCrusher($line, Defs::CEIL_LOWERTOFLOOR),
@@ -1060,7 +1093,7 @@ final class Specials
             116 => fn () => $this->doDoor($line, Defs::VLD_BLAZECLOSE),
             120 => fn () => $this->doPlatDwus($line, true),
             123 => fn () => $this->doPlatDwus($line, true),
-            45 => fn () => $this->doFloor($line, fn ($s) => $s->floorheight - 8 * Defs::FRACUNIT, -1),
+            45 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1),
             60 => fn () => $this->doFloor($line, [self::class, 'lowestFloor'], -1),
             64 => fn () => $this->doFloor($line, [self::class, 'raiseFloorDest'], 1),
             70 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1, Defs::FLOORSPEED * 4),
@@ -1110,7 +1143,7 @@ final class Specials
         } elseif ($sp === 17) {
             $this->startLightStrobing($line);
         } elseif ($sp === 19) {
-            $this->doFloor($line, fn ($s) => $s->floorheight - 8 * Defs::FRACUNIT, -1);
+            $this->doFloor($line, [self::class, 'highestFloor'], -1);
         } elseif ($sp === 22) {
             $this->doPlatRaise($line, 0);
         } elseif ($sp === 25) {

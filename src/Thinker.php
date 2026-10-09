@@ -60,7 +60,14 @@ final class Thinker
         }
         $world->mobjs[] = $mo;
         Collision::setThingPosition($world, $mo);
-        self::setMobjState($mo, (int) $info[Info::MI_SPAWNSTATE], $world, $game);
+        // Vanilla does not call P_SetMobjState here: the spawn action (A_Look)
+        // must wait until the thinker advances, after P_SpawnMapThing sets the angle.
+        $state = (int) $info[Info::MI_SPAWNSTATE];
+        $st = Info::$liveStates[$state];
+        $mo->istate = $state;
+        $mo->tics = (int) $st[2];
+        $mo->sprite = Info::SPRNAMES[(int) $st[0]];
+        $mo->frame = (int) $st[1];
         return $mo;
     }
 

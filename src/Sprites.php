@@ -199,6 +199,9 @@ final class Sprites
             if (($mobj->sprite ?? '') === '' || ($mobj->player ?? null) !== null) {
                 continue;
             }
+            if (($mobj->flags & Defs::MF_NOSECTOR) !== 0) {
+                continue;
+            }
             $item = self::project($renderer, $mobj);
             if ($item !== null) {
                 $visible[] = $item;

@@ -367,11 +367,16 @@ final class Video
             return;
         }
         $queued = (int) $this->sdl->SDL_GetQueuedAudioSize($this->audioDev);
-        $budget = 11025; // ~1s cap
-        if ($queued > $budget * 2) {
+        // 16-bit mono at 11025 Hz. Three device periods (~139 ms). A 1 s
+        // backlog is what made shots and doors land late next to Harbour.
+        $limit = 512 * 2 * 3;
+        if ($queued >= $limit) {
             return;
         }
-        $n = min(count($this->mix), 2048);
+        $n = min(count($this->mix), intdiv($limit - $queued, 2));
+        if ($n < 1) {
+            return;
+        }
         $chunk = array_splice($this->mix, 0, $n);
         $pcm = '';
         foreach ($chunk as $s) {
