@@ -53,14 +53,49 @@ final class Collision
     private static int $traceDx = 0;
     private static int $traceDy = 0;
     private const INT_MAX = 0x7FFFFFFF;
+    private const MAXINTERCEPTS_ORIGINAL = 128;
+    /** Vanilla bulletslope global (InterceptsOverrun may clobber it between pellets). */
+    private static int $bulletSlope = 0;
+    private static int $openTop = 0;
+    private static int $openBottom = 0;
+    private static int $openRange = 0;
+    private static int $lowFloor = 0;
+    private static ?World $overrunWorld = null;
+    /** @var list<list<int>> */
+    private static array $playerStarts = [
+        [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0],
+        [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0],
+    ];
+
+    public static function getBulletSlope(): int
+    {
+        return self::$bulletSlope;
+    }
 
     public static function pointOnSide(int $x, int $y, Node $node): int
     {
+        if ($node->dx === 0) {
+            if ($x <= $node->x) {
+                return $node->dy > 0 ? 1 : 0;
+            }
+            return $node->dy < 0 ? 1 : 0;
+        }
+        if ($node->dy === 0) {
+            if ($y <= $node->y) {
+                return $node->dx < 0 ? 1 : 0;
+            }
+            return $node->dx > 0 ? 1 : 0;
+        }
         $dx = Compat::asI32($x - $node->x);
         $dy = Compat::asI32($y - $node->y);
-        $left = Compat::asI32($node->dy >> 16) * $dx;
-        $right = $dy * Compat::asI32($node->dx >> 16);
-        return $right >= $left ? 1 : 0;
+        $ndx = Compat::asU32($node->dx);
+        $ndy = Compat::asU32($node->dy);
+        if ((($ndy ^ $ndx ^ Compat::asU32($dx) ^ Compat::asU32($dy)) & 0x80000000) !== 0) {
+            return (($ndy ^ Compat::asU32($dx)) & 0x80000000) !== 0 ? 1 : 0;
+        }
+        $left = Compat::fixedMul(Compat::shar($node->dy, 16), $dx);
+        $right = Compat::fixedMul($dy, Compat::shar($node->dx, 16));
+        return $right < $left ? 0 : 1;
     }
 
     public static function pointInSubsector(World $world, int $x, int $y): Subsector
@@ -101,15 +136,15 @@ final class Collision
     public static function boxOnLineSide(array $box, Line $line): int
     {
         if ($line->dx === 0) {
-            $p1 = $box[Defs::BOXRIGHT] < $line->v1->x ? 0 : 1;
-            $p2 = $box[Defs::BOXLEFT] < $line->v1->x ? 0 : 1;
-            if ($line->dy > 0) {
+            $p1 = $box[Defs::BOXRIGHT] < $line->v1->x ? 1 : 0;
+            $p2 = $box[Defs::BOXLEFT] < $line->v1->x ? 1 : 0;
+            if ($line->dy < 0) {
                 $p1 ^= 1;
                 $p2 ^= 1;
             }
         } elseif ($line->dy === 0) {
-            $p1 = $box[Defs::BOXTOP] > $line->v1->y ? 0 : 1;
-            $p2 = $box[Defs::BOXBOTTOM] > $line->v1->y ? 0 : 1;
+            $p1 = $box[Defs::BOXTOP] > $line->v1->y ? 1 : 0;
+            $p2 = $box[Defs::BOXBOTTOM] > $line->v1->y ? 1 : 0;
             if ($line->dx < 0) {
                 $p1 ^= 1;
                 $p2 ^= 1;
@@ -160,6 +195,7 @@ final class Collision
 
     public static function setThingPosition(World $world, Mobj $thing): void
     {
+        $thing->subsector = self::pointInSubsector($world, $thing->x, $thing->y);
         $thing->bnext = null;
         $thing->bprev = null;
         $thing->blocklinked = false;
@@ -182,7 +218,8 @@ final class Collision
         $thing->blocklinked = true;
     }
 
-    private static function blockThings(World $world, int $x, int $y, callable $func): bool
+    /** P_BlockThingsIterator. */
+    public static function blockThings(World $world, int $x, int $y, callable $func): bool
     {
         if ($x < 0 || $y < 0 || $x >= $world->bmapwidth || $y >= $world->bmapheight) {
             return true;
@@ -236,15 +273,30 @@ final class Collision
             return true;
         }
         if ($tm->flags & Defs::MF_SKULLFLY) {
+            // PIT_CheckThing: damage = (P_Random%8+1) * info->damage (Harbour/vanilla).
+            Info::boot();
+            $base = (int) Info::$liveMobjinfo[$tm->type][Info::MI_DAMAGE];
             if ($game !== null) {
-                $game->damageMobj($other, $tm, ((Enemy::publicRandom() % 8) + 1) * ($tm->damage ?: 0), $tm);
+                $game->damageMobj($other, $tm, ((Enemy::publicRandom() % 8) + 1) * $base, $tm);
             }
             $tm->flags &= ~Defs::MF_SKULLFLY;
             $tm->momx = $tm->momy = $tm->momz = 0;
-            Thinker::setMobjState($tm, Info::MOBJINFO[$tm->type][Info::MI_SPAWNSTATE], $world, $game);
+            Thinker::setMobjState(
+                $tm,
+                (int) Info::$liveMobjinfo[$tm->type][Info::MI_SPAWNSTATE],
+                $world,
+                $game
+            );
             return false;
         }
         if ($tm->flags & Defs::MF_MISSILE) {
+            // PIT_CheckThing: Z overlap, then damage here (not in P_ExplodeMissile).
+            if ($tm->z > $other->z + $other->height) {
+                return true;
+            }
+            if ($tm->z + $tm->height < $other->z) {
+                return true;
+            }
             $target = $tm->target;
             if ($target !== null && self::sameSpecies($target, $other)) {
                 if ($other === $target) {
@@ -257,8 +309,10 @@ final class Collision
             if (($other->flags & Defs::MF_SHOOTABLE) === 0) {
                 return ($other->flags & Defs::MF_SOLID) === 0;
             }
-            if (!Enemy::missileReaches($tm, $other, $tm->tmx, $tm->tmy, $tm->z)) {
-                return true;
+            if ($game !== null) {
+                Info::boot();
+                $base = $tm->damage ?: (int) Info::$liveMobjinfo[$tm->type][Info::MI_DAMAGE];
+                $game->damageMobj($other, $tm->target, ((Enemy::publicRandom() % 8) + 1) * $base, $tm);
             }
             return false;
         }
@@ -320,6 +374,72 @@ final class Collision
         if ($ld->special) {
             $chk->spechit[] = $ld;
         }
+        return true;
+    }
+
+    /**
+     * PIT_StompThing: shootables at the teleport destination are crushed (10000).
+     * Non-player teleports fail if anything shootable is there (except MAP30).
+     */
+    private static function pitStompThing(World $world, Mobj $tm, Mobj $other, ?object $game): bool
+    {
+        if (($other->flags & Defs::MF_SHOOTABLE) === 0) {
+            return true;
+        }
+        $dist = $other->radius + $tm->radius;
+        if (abs($other->x - $tm->tmx) >= $dist || abs($other->y - $tm->tmy) >= $dist) {
+            return true;
+        }
+        if ($other === $tm) {
+            return true;
+        }
+        $mapn = $game->mapn ?? 0;
+        if ($tm->player === null && $mapn !== 30) {
+            return false;
+        }
+        if ($game !== null) {
+            $game->damageMobj($other, $tm, 10000, $tm);
+        }
+        return true;
+    }
+
+    /** P_TeleportMove: stomp shootables, then place without line checks. */
+    public static function teleportMove(World $world, Mobj $thing, int $x, int $y, ?object $game = null): bool
+    {
+        $thing->tmx = $x;
+        $thing->tmy = $y;
+        $r = $thing->radius;
+        $bbox = [
+            Defs::BOXLEFT => $x - $r,
+            Defs::BOXRIGHT => $x + $r,
+            Defs::BOXBOTTOM => $y - $r,
+            Defs::BOXTOP => $y + $r,
+        ];
+        $sub = self::pointInSubsector($world, $x, $y);
+        $tmFloorZ = $sub->sector->floorheight;
+        $tmCeilingZ = $sub->sector->ceilingheight;
+        $world->validcount++;
+        if ($world->blocklinks !== []) {
+            $orgx = $world->bmaporgx;
+            $orgy = $world->bmaporgy;
+            $xl = Compat::shar($bbox[Defs::BOXLEFT] - $orgx - Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            $xh = Compat::shar($bbox[Defs::BOXRIGHT] - $orgx + Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            $yl = Compat::shar($bbox[Defs::BOXBOTTOM] - $orgy - Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            $yh = Compat::shar($bbox[Defs::BOXTOP] - $orgy + Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            for ($bx = $xl; $bx <= $xh; $bx++) {
+                for ($by = $yl; $by <= $yh; $by++) {
+                    if (!self::blockThings($world, $bx, $by, fn ($th) => self::pitStompThing($world, $thing, $th, $game))) {
+                        return false;
+                    }
+                }
+            }
+        }
+        self::unsetThingPosition($world, $thing);
+        $thing->floorz = $tmFloorZ;
+        $thing->ceilingz = $tmCeilingZ;
+        $thing->x = $x;
+        $thing->y = $y;
+        self::setThingPosition($world, $thing);
         return true;
     }
 
@@ -492,7 +612,9 @@ final class Collision
         if (self::$earlyout && $frac < Defs::FRACUNIT && $ld->backsector === null) {
             return false;
         }
-        self::$intercepts[] = ['frac' => $frac, 'isaline' => true, 'line' => $ld, 'thing' => null];
+        $inn = ['frac' => $frac, 'isaline' => true, 'line' => $ld, 'thing' => null];
+        self::$intercepts[] = $inn;
+        self::interceptsOverrun($inn);
         return true;
     }
 
@@ -518,8 +640,88 @@ final class Collision
         if ($frac < 0) {
             return true;
         }
-        self::$intercepts[] = ['frac' => $frac, 'isaline' => false, 'line' => null, 'thing' => $thing];
+        $inn = ['frac' => $frac, 'isaline' => false, 'line' => null, 'thing' => $thing];
+        self::$intercepts[] = $inn;
+        self::interceptsOverrun($inn);
         return true;
+    }
+
+    /** @param array{frac:int,isaline:bool,line:?Line,thing:?Mobj} $intercept */
+    private static function interceptsOverrun(array $intercept): void
+    {
+        $num = count(self::$intercepts) - 1;
+        if ($num <= self::MAXINTERCEPTS_ORIGINAL) {
+            return;
+        }
+        $location = ($num - self::MAXINTERCEPTS_ORIGINAL - 1) * 12;
+        self::interceptsMemoryOverrun($location, $intercept['frac']);
+        self::interceptsMemoryOverrun($location + 4, $intercept['isaline'] ? 1 : 0);
+        self::interceptsMemoryOverrun($location + 8, 0);
+    }
+
+    private static function interceptsMemoryOverrun(int $location, int $value): void
+    {
+        $table = [
+            [4, null, false], [4, null, false], [4, null, false],
+            [4, 'lowfloor', false], [4, 'openbottom', false], [4, 'opentop', false], [4, 'openrange', false],
+            [4, null, false], [120, null, false], [8, null, false],
+            [4, 'bulletslope', false], [4, null, false], [4, null, false], [4, null, false],
+            [40, 'playerstarts', true], [4, null, false],
+            [4, 'bmapwidth', false], [4, null, false], [4, 'bmaporgx', false], [4, 'bmaporgy', false],
+            [4, null, false], [4, 'bmapheight', false],
+        ];
+        $offset = 0;
+        foreach ($table as [$len, $name, $int16]) {
+            if ($len === 0) {
+                break;
+            }
+            if ($offset + $len > $location) {
+                if ($name === null) {
+                    break;
+                }
+                if ($int16) {
+                    $index = intdiv($location - $offset, 2);
+                    self::overrunSetPlayerStartShort($index, $value & 0xFFFF);
+                    self::overrunSetPlayerStartShort($index + 1, ($value >> 16) & 0xFFFF);
+                } elseif ($name === 'lowfloor') {
+                    self::$lowFloor = $value;
+                } elseif ($name === 'openbottom') {
+                    self::$openBottom = $value;
+                } elseif ($name === 'opentop') {
+                    self::$openTop = $value;
+                } elseif ($name === 'openrange') {
+                    self::$openRange = $value;
+                } elseif ($name === 'bulletslope') {
+                    self::$bulletSlope = $value;
+                } elseif (self::$overrunWorld !== null) {
+                    if ($name === 'bmapwidth') {
+                        self::$overrunWorld->bmapwidth = $value;
+                    } elseif ($name === 'bmaporgx') {
+                        self::$overrunWorld->bmaporgx = $value;
+                    } elseif ($name === 'bmaporgy') {
+                        self::$overrunWorld->bmaporgy = $value;
+                    } elseif ($name === 'bmapheight') {
+                        self::$overrunWorld->bmapheight = $value;
+                    }
+                }
+                break;
+            }
+            $offset += $len;
+        }
+    }
+
+    private static function overrunSetPlayerStartShort(int $index, int $value): void
+    {
+        $thing = intdiv($index, 5);
+        $field = $index % 5;
+        if ($thing < 0 || $thing >= count(self::$playerStarts)) {
+            return;
+        }
+        $value &= 0xFFFF;
+        if ($value >= 32768) {
+            $value -= 65536;
+        }
+        self::$playerStarts[$thing][$field] = $value;
     }
 
     private static function traverseIntercepts(callable $func, int $maxfrac): bool
@@ -563,6 +765,7 @@ final class Collision
         callable $trav
     ): bool {
         self::$earlyout = ($flags & Defs::PT_EARLYOUT) !== 0;
+        self::$overrunWorld = $world;
         $world->validcount++;
         self::$intercepts = [];
         $orgx = $world->bmaporgx;
@@ -891,7 +1094,8 @@ final class Collision
 
     public static function bulletSlope(World $world, Mobj $source): int
     {
-        return self::missileAim($world, $source)['slope'];
+        self::$bulletSlope = self::missileAim($world, $source)['slope'];
+        return self::$bulletSlope;
     }
 
     /**
@@ -1064,8 +1268,8 @@ final class Collision
     /** P_CheckSight: REJECT, then the BSP, closing the vertical window at each opening. */
     public static function checkSight(World $world, Mobj $a, Mobj $b): bool
     {
-        $s1 = self::pointInSubsector($world, $a->x, $a->y)->sector;
-        $s2 = self::pointInSubsector($world, $b->x, $b->y)->sector;
+        $s1 = ($a->subsector ?? self::pointInSubsector($world, $a->x, $a->y))->sector;
+        $s2 = ($b->subsector ?? self::pointInSubsector($world, $b->x, $b->y))->sector;
         $n = count($world->sectors);
         $rej = $world->rejectmatrix;
         if ($n && $rej !== '') {
@@ -1082,8 +1286,9 @@ final class Collision
             'z' => $eye,
             'x' => $a->x,
             'y' => $a->y,
-            'dx' => Compat::asI32($b->x - $a->x),
-            'dy' => Compat::asI32($b->y - $a->y),
+            // Harbour strace.dx/dy: no int32 wrap.
+            'dx' => $b->x - $a->x,
+            'dy' => $b->y - $a->y,
             't2x' => $b->x,
             't2y' => $b->y,
         ];
@@ -1094,13 +1299,35 @@ final class Collision
         return self::crossSightBsp($world, $world->numnodes - 1, $st);
     }
 
-    /** P_DivlineSide. 2 means the point is on the line. */
+    /**
+     * P_DivlineSide. 2 means the point is on the line. The dy==0 test keeps the vanilla x==y bug.
+     * Harbour Shar is 64-bit (no int32 clamp on the delta) — match that for BSP sight sides.
+     */
     private static function sightSide(int $x, int $y, int $lx, int $ly, int $ldx, int $ldy): int
     {
-        $dx = Compat::shar($x - $lx, Defs::FRACBITS);
-        $dy = Compat::shar($y - $ly, Defs::FRACBITS);
-        $left = Compat::asI32(Compat::shar($ldy, Defs::FRACBITS) * $dx);
-        $right = Compat::asI32($dy * Compat::shar($ldx, Defs::FRACBITS));
+        if ($ldx === 0) {
+            if ($x === $lx) {
+                return 2;
+            }
+            if ($x <= $lx) {
+                return $ldy > 0 ? 1 : 0;
+            }
+            return $ldy < 0 ? 1 : 0;
+        }
+        if ($ldy === 0) {
+            if ($x === $ly) {
+                return 2;
+            }
+            if ($y <= $ly) {
+                return $ldx < 0 ? 1 : 0;
+            }
+            return $ldx > 0 ? 1 : 0;
+        }
+        // Harbour Shar is HB_MAXINT (no int32 clamp before >>FRACBITS).
+        $dx = ($x - $lx) >> Defs::FRACBITS;
+        $dy = ($y - $ly) >> Defs::FRACBITS;
+        $left = ($ldy >> Defs::FRACBITS) * $dx;
+        $right = $dy * ($ldx >> Defs::FRACBITS);
         if ($right < $left) {
             return 0;
         }
@@ -1224,35 +1451,61 @@ final class Collision
         return $thing->ceilingz - $thing->floorz >= $thing->height;
     }
 
-    /** P_ChangeSector: after a floor/ceiling move, carry or crush things in that sector. */
-    public static function changeSector(World $world, Sector $sector, bool $crush): bool
+    /** P_ChangeSector: blockbox walk (vanilla), so straddling mobjs still ride the plane. */
+    public static function changeSector(World $world, Sector $sector, bool $crush, ?object $game = null): bool
     {
         $nofit = false;
-        foreach ($world->mobjs as $thing) {
-            if (self::pointInSubsector($world, $thing->x, $thing->y)->sector !== $sector) {
-                continue;
-            }
-            if (self::thingHeightClip($world, $thing)) {
-                continue;
-            }
-            if ($thing->health <= 0) {
-                $thing->flags &= ~Defs::MF_SOLID;
-                $thing->height = 0;
-                continue;
-            }
-            if (($thing->flags & Defs::MF_SHOOTABLE) === 0) {
-                continue;
-            }
-            $nofit = true;
-            if ($crush) {
-                $thing->health -= 10;
-                if ($thing->player !== null) {
-                    $thing->player->health = $thing->health;
-                }
-                if ($thing->health <= 0) {
-                    $thing->flags &= ~Defs::MF_SOLID;
-                    $thing->height = 0;
-                }
+        $leveltime = $game->leveltime ?? 0;
+        $seen = [];
+        $xl = $sector->blockbox[Defs::BOXLEFT] ?? 0;
+        $xh = $sector->blockbox[Defs::BOXRIGHT] ?? 0;
+        $yl = $sector->blockbox[Defs::BOXBOTTOM] ?? 0;
+        $yh = $sector->blockbox[Defs::BOXTOP] ?? 0;
+        for ($x = $xl; $x <= $xh; ++$x) {
+            for ($y = $yl; $y <= $yh; ++$y) {
+                self::blockThings($world, $x, $y, function (Mobj $thing) use (
+                    $world, $crush, $game, $leveltime, &$nofit, &$seen
+                ): bool {
+                    $id = spl_object_id($thing);
+                    if (isset($seen[$id])) {
+                        return true;
+                    }
+                    $seen[$id] = true;
+                    if (self::thingHeightClip($world, $thing)) {
+                        return true;
+                    }
+                    if ($thing->health <= 0) {
+                        if ($game !== null) {
+                            Thinker::setMobjState($thing, Info::S_GIBS, $world, $game);
+                        }
+                        $thing->flags &= ~Defs::MF_SOLID;
+                        $thing->height = 0;
+                        $thing->radius = 0;
+                        return true;
+                    }
+                    if (($thing->flags & Defs::MF_DROPPED) !== 0) {
+                        Thinker::removeMobj($world, $thing);
+                        return true;
+                    }
+                    if (($thing->flags & Defs::MF_SHOOTABLE) === 0) {
+                        return true;
+                    }
+                    $nofit = true;
+                    if ($crush && $game !== null && ($leveltime & 3) === 0) {
+                        $game->damageMobj($thing, null, 10);
+                        $blood = Thinker::spawnMobj(
+                            $world,
+                            $thing->x,
+                            $thing->y,
+                            $thing->z + intdiv($thing->height, 2),
+                            Info::MT_BLOOD,
+                            $game
+                        );
+                        $blood->momx = (Enemy::publicRandom() - Enemy::publicRandom()) * 4096;
+                        $blood->momy = (Enemy::publicRandom() - Enemy::publicRandom()) * 4096;
+                    }
+                    return true;
+                });
             }
         }
         return $nofit;
@@ -1265,7 +1518,7 @@ final class Collision
         if ($dx < $dy) {
             [$dx, $dy] = [$dy, $dx];
         }
-        return $dx + intdiv($dy, 2);
+        return $dx + $dy - intdiv($dy, 2);
     }
 
     public static function angleTo(int $x1, int $y1, int $x2, int $y2): int

@@ -186,6 +186,7 @@ final class Saveg
         $game->world = new World();
         $game->world->setupLevel($game->wad, $game->res, $game->episode, $game->mapn);
         $game->specials = new Specials($game->world, $game->res, $game->sound);
+        $game->specials->spawnSpecials();
         $world = $game->world;
         self::restoreList($world->sectors, $state['sectors'] ?? []);
         self::restoreList($world->sides, $state['sides'] ?? []);

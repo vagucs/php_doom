@@ -202,7 +202,14 @@ final class Sprites
             if (($mobj->flags & Defs::MF_NOSECTOR) !== 0) {
                 continue;
             }
-            $item = self::project($renderer, $mobj);
+            // Harbour R_AddSprites: only project things whose sector was visited
+            // in this frame's BSP (validcount). Prevents sprites "through walls"
+            // when their sector is fully occluded (e.g. sergeant behind yellow door).
+            $sec = ($mobj->subsector ?? Collision::pointInSubsector($world, $mobj->x, $mobj->y))->sector;
+            if ($sec === null || $sec->validcount !== $world->validcount) {
+                continue;
+            }
+            $item = self::project($renderer, $world, $mobj);
             if ($item !== null) {
                 $visible[] = $item;
             }
@@ -214,7 +221,7 @@ final class Sprites
     }
 
     /** @return null|array<string,mixed> */
-    private static function project(Renderer $renderer, mixed $mobj): ?array
+    private static function project(Renderer $renderer, World $world, mixed $mobj): ?array
     {
         $trX = Compat::asI32($mobj->x - $renderer->viewx);
         $trY = Compat::asI32($mobj->y - $renderer->viewy);
@@ -262,8 +269,10 @@ final class Sprites
         if ($visibleX1 > $x1) {
             $startfrac += $xiscale * ($visibleX1 - $x1);
         }
+        $sector = Collision::pointInSubsector($world, $mobj->x, $mobj->y)->sector;
         return [
             'mo' => $mobj,
+            'lightlevel' => $sector->lightlevel,
             'patch' => $patch,
             'w' => $width,
             'scale' => $xscale << $renderer->detailshift,
@@ -376,6 +385,8 @@ final class Sprites
         string $patch,
         int $sx,
         int $sy,
+        ?int $lightlevel = null,
+        bool $fullbright = false,
     ): void {
         [$width, , $left, $top] = VVideo::patchSize($patch);
         $tx = $sx - 160 * Defs::FRACUNIT;
@@ -410,6 +421,8 @@ final class Sprites
                 'x2' => $visibleX2,
                 'xiscale' => $renderer->pspriteiscale,
                 'startfrac' => $startfrac,
+                'lightlevel' => $lightlevel,
+                'fullbright' => $fullbright,
             ],
             false
         );
@@ -432,9 +445,39 @@ final class Sprites
             Tables::$finesine[($angle + intdiv(Defs::FINEANGLES, 4)) % count(Tables::$finesine)]
         );
         $angle &= intdiv(Defs::FINEANGLES, 2) - 1;
+        // Do not write pspriteSy here: draw runs after leveltime++ and would
+        // desync A_Lower's starting height from A_WeaponReady.
         $sy = self::WEAPONTOP + Compat::fixedMul($bob, Tables::$finesine[$angle]);
-        $player->pspriteSy = $sy;
         return [$sx, $sy];
+    }
+
+    /**
+     * Sector light, same choice as R_ProjectSprite: fullbright and the
+     * invulnerability map win. Otherwise the colormap follows the sector
+     * and how large the sprite is on screen.
+     *
+     * @param array<string,mixed> $sprite
+     */
+    private static function spriteColormap(Renderer $renderer, array $sprite): string
+    {
+        if ($renderer->fixedcolormap !== '') {
+            return $renderer->fixedcolormap;
+        }
+        $fullbright = ($sprite['fullbright'] ?? false)
+            || (isset($sprite['mo']) && ((($sprite['mo']->frame ?? 0) & Info::FF_FULLBRIGHT) !== 0));
+        if ($fullbright || !isset($sprite['lightlevel']) || $sprite['lightlevel'] === null) {
+            return $renderer->res->colormap(0);
+        }
+        $lightnum = ($sprite['lightlevel'] >> 4) + $renderer->extralight;
+        $lightnum = max(0, min(Defs::LIGHTLEVELS - 1, $lightnum));
+        if (isset($sprite['mo'])) {
+            $index = Compat::ushr($sprite['scale'], Defs::LIGHTSCALESHIFT);
+            $index = min(Defs::MAXLIGHTSCALE - 1, $index);
+        } else {
+            $index = Defs::MAXLIGHTSCALE - 1;
+        }
+        $level = (int) ($renderer->scalelight[$lightnum][$index] ?? 0);
+        return $renderer->res->colormap($level);
     }
 
     /**
@@ -466,11 +509,8 @@ final class Sprites
         for ($column = 0; $column < max(1, $patchWidth); ++$column) {
             $columnOffsets[$column] = Bin::u32($patch, 8 + $column * 4);
         }
-        $colormap = $renderer->fixedcolormap !== '' ? $renderer->fixedcolormap : $renderer->res->colormap(0);
         $fuzz = isset($sprite['mo']) && ((($sprite['mo']->flags ?? 0) & Defs::MF_SHADOW) !== 0);
-        if ($fuzz) {
-            $colormap = $renderer->res->colormap(6);
-        }
+        $colormap = $fuzz ? $renderer->res->colormap(6) : self::spriteColormap($renderer, $sprite);
         $patchLength = strlen($patch);
         $frac = $sprite['startfrac'];
         $fbLen = count($fb);

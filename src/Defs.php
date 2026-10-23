@@ -148,6 +148,7 @@ final class Defs
     public const BT_CHANGE = 4;
     public const BT_WEAPONMASK = 8 + 16 + 32;
     public const BT_WEAPONSHIFT = 3;
+    public const BT_SPECIAL = 128;
     public const PST_LIVE = 0;
     public const PST_DEAD = 1;
     public const PST_REBORN = 2;
@@ -193,12 +194,17 @@ final class Defs
     public const VLD_BLAZERAISE = 5;
     public const VLD_BLAZEOPEN = 6;
     public const VLD_BLAZECLOSE = 7;
-    public const PLAT_DOWN = 0;
-    public const PLAT_UP = 1;
+    /** Harbour/vanilla plat_e: up=0, down=1, waiting=2 (P_Random&1 for perpetualRaise). */
+    public const PLAT_UP = 0;
+    public const PLAT_DOWN = 1;
     public const PLAT_WAITING = 2;
-    public const PLAT_DWUS = 0;
-    public const PLAT_PERPETUAL = 1;
-    public const PLAT_BLAZEDWUS = 2;
+    public const PLAT_IN_STASIS = 3;
+    /** Harbour/vanilla plattype_e: perpetualRaise=0, downWaitUpStay=1, blazeDWUS=4. */
+    public const PLAT_PERPETUAL = 0;
+    public const PLAT_DWUS = 1;
+    public const PLAT_RAISEANDCHANGE = 2;
+    public const PLAT_RAISETONEARESTANDCHANGE = 3;
+    public const PLAT_BLAZEDWUS = 4;
     public const TICRATE = 35;
     public const INVERSECOLORMAP = 32;
     public const INVULNTICS = 30 * self::TICRATE;

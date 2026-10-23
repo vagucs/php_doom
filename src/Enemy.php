@@ -100,22 +100,46 @@ final class Enemy
         self::$prndindex = 0;
     }
 
+    public static function rngIndex(): int
+    {
+        return self::$prndindex;
+    }
+
     private static function walkTics(Mobj $mo): int
     {
         return self::profiles()[$mo->type][7] ?? 3;
     }
 
-    public static function tickEnemies(World $world, object $game): void
+    /**
+     * @param bool|null $missilesOnly null=all; false=skip MF_MISSILE; true=only MF_MISSILE.
+     * Vanilla: map mobjs, then lights (SpawnSpecials), then mid-game missiles.
+     */
+    public static function tickEnemies(World $world, object $game, ?bool $missilesOnly = null): void
     {
         $p = $game->player;
         if (!$p || !$p->mo) {
             return;
         }
-        foreach (array_values($world->mobjs) as $mo) {
-            if ($mo === $p->mo) {
+        $i = 0;
+        while ($i < count($world->mobjs)) {
+            $mo = $world->mobjs[$i];
+            $isMis = ($mo->flags & Defs::MF_MISSILE) !== 0;
+            if ($missilesOnly === false && $isMis) {
+                $i++;
                 continue;
             }
+            if ($missilesOnly === true && !$isMis) {
+                $i++;
+                continue;
+            }
+            $next = $world->mobjs[$i + 1] ?? null;
             Thinker::mobjThinker($world, $mo, $game);
+            if ($next === null) {
+                $i++;
+                continue;
+            }
+            $found = array_search($next, $world->mobjs, true);
+            $i = $found === false ? $i + 1 : (int) $found;
         }
     }
 
@@ -134,30 +158,36 @@ final class Enemy
         Info::boot();
         $info = Info::$liveMobjinfo[$mo->type];
         $mo->flags &= ~(Defs::MF_SHOOTABLE | Defs::MF_FLOAT | Defs::MF_SKULLFLY);
+        if ($mo->type !== Info::MT_SKULL) {
+            $mo->flags &= ~Defs::MF_NOGRAVITY;
+        }
         $mo->flags |= Defs::MF_CORPSE | Defs::MF_DROPOFF;
-        $mo->height >>= 2;
+        $mo->height = intdiv($mo->height, 4);
         if ($source?->player && ($mo->flags & Defs::MF_COUNTKILL)) {
             ++$source->player->killcount;
+        } elseif ($source === null && ($mo->flags & Defs::MF_COUNTKILL)) {
+            if ($game->player) {
+                ++$game->player->killcount;
+            }
         }
         $xds = (int) $info[Info::MI_XDEATHSTATE];
         $st = ($mo->health < -(int) $info[Info::MI_SPAWNHEALTH] && $xds)
             ? $xds : (int) $info[Info::MI_DEATHSTATE];
         Thinker::setMobjState($mo, $st, $game->world, $game);
-        if ($mo->alive) {
-            $mo->tics -= self::random() & 3;
-            if ($mo->tics < 1) {
-                $mo->tics = 1;
-            }
-            $drop = match ($mo->type) {
-                Info::MT_POSSESSED => Info::MT_CLIP,
-                Info::MT_SHOTGUY => Info::MT_SHOTGUN,
-                Info::MT_CHAINGUY => Info::MT_CHAINGUN,
-                default => null,
-            };
-            if ($drop !== null) {
-                $item = Thinker::spawnMobj($game->world, $mo->x, $mo->y, Thinker::ONFLOORZ, $drop, $game);
-                $item->flags |= Defs::MF_DROPPED;
-            }
+        // P_KillMobj always jitters death tics (vanilla), even if action cleared alive.
+        $mo->tics -= self::random() & 3;
+        if ($mo->tics < 1) {
+            $mo->tics = 1;
+        }
+        $drop = match ($mo->type) {
+            Info::MT_WOLFSS, Info::MT_POSSESSED => Info::MT_CLIP,
+            Info::MT_SHOTGUY => Info::MT_SHOTGUN,
+            Info::MT_CHAINGUY => Info::MT_CHAINGUN,
+            default => null,
+        };
+        if ($drop !== null) {
+            $item = Thinker::spawnMobj($game->world, $mo->x, $mo->y, Thinker::ONFLOORZ, $drop, $game);
+            $item->flags |= Defs::MF_DROPPED;
         }
     }
 
@@ -200,7 +230,7 @@ final class Enemy
         if (!$emitter) {
             return;
         }
-        $sec = Collision::pointInSubsector($world, $emitter->x, $emitter->y)->sector;
+        $sec = ($emitter->subsector ?? Collision::pointInSubsector($world, $emitter->x, $emitter->y))->sector;
         ++$world->validcount;
         self::recursiveSound($world, $sec, 0, $emitter);
     }
@@ -237,12 +267,10 @@ final class Enemy
 
     private static function look(World $world, Mobj $mo, Mobj $player, object $game): void
     {
+        // A_Look: soundtarget first (Harbour/vanilla) — do not bail on player flags before that.
         $mo->threshold = 0;
-        if (!($player->flags & Defs::MF_SHOOTABLE)) {
-            return;
-        }
         $see = false;
-        $sec = Collision::pointInSubsector($world, $mo->x, $mo->y)->sector;
+        $sec = ($mo->subsector ?? Collision::pointInSubsector($world, $mo->x, $mo->y))->sector;
         $target = $sec->soundtarget;
         if ($target && ($target->flags & Defs::MF_SHOOTABLE)) {
             $mo->target = $target;
@@ -253,8 +281,6 @@ final class Enemy
         if (!$see && !self::lookForPlayer($world, $mo, $player)) {
             return;
         }
-        $mo->movedir = self::DI_NODIR;
-        $mo->movecount = 0;
         Info::boot();
         $seeSfx = Info::$liveMobjinfo[$mo->type][Info::MI_SEESOUND] ?? '';
         if ($seeSfx === 'posit1' || $seeSfx === 'posit2' || $seeSfx === 'posit3') {
@@ -321,7 +347,7 @@ final class Enemy
             self::faceMoveDir($mo);
         }
         $target = $mo->target;
-        if (!$target || $target->health <= 0 || !($target->flags & Defs::MF_SHOOTABLE)) {
+        if (!$target || ($target->flags & Defs::MF_SHOOTABLE) === 0) {
             if (!self::lookForPlayer($world, $mo, $player, true)) {
                 Info::boot();
                 Thinker::setMobjState($mo, (int) Info::$liveMobjinfo[$mo->type][Info::MI_SPAWNSTATE], $world, $game);
@@ -341,7 +367,8 @@ final class Enemy
         $meleeSt = (int) $info[Info::MI_MELEESTATE];
         $missSt = (int) $info[Info::MI_MISSILESTATE];
         $speed = (int) $info[Info::MI_SPEED];
-        if ($meleeSt && $dist < Defs::MELEERANGE - 20 * Defs::FRACUNIT + $target->radius
+        $tgtRad = (int) Info::$liveMobjinfo[$target->type][Info::MI_RADIUS];
+        if ($meleeSt && $dist < Defs::MELEERANGE - 20 * Defs::FRACUNIT + $tgtRad
             && Collision::checkSight($world, $mo, $target)) {
             $sfx = $info[Info::MI_ATTACKSOUND] ?? '';
             if ($sfx) {
@@ -367,11 +394,15 @@ final class Enemy
 
     private static function missileOk(World $w, Mobj $mo, Mobj $target, int $dist, bool $melee): bool
     {
+        // P_CheckMissileRange: sight first, then JUSTHIT (vanilla order).
+        if (!Collision::checkSight($w, $mo, $target)) {
+            return false;
+        }
         if ($mo->flags & Defs::MF_JUSTHIT) {
             $mo->flags &= ~Defs::MF_JUSTHIT;
             return true;
         }
-        if (!Collision::checkSight($w, $mo, $target) || $mo->reactiontime) {
+        if ($mo->reactiontime) {
             return false;
         }
         $d = $dist - 64 * Defs::FRACUNIT;
@@ -438,14 +469,29 @@ final class Enemy
         }
     }
 
+    /** P_CheckMeleeRange: reach uses target info radius (vanilla) and needs sight. */
+    private static function checkMeleeRange(World $world, Mobj $mo): bool
+    {
+        $target = $mo->target;
+        if ($target === null) {
+            return false;
+        }
+        Info::boot();
+        $rad = (int) Info::$liveMobjinfo[$target->type][Info::MI_RADIUS];
+        $dist = Collision::approxDistance($target->x - $mo->x, $target->y - $mo->y);
+        if ($dist >= Defs::MELEERANGE - 20 * Defs::FRACUNIT + $rad) {
+            return false;
+        }
+        return Collision::checkSight($world, $mo, $target);
+    }
+
     private static function doAttack(World $world, Mobj $mo, object $game): void
     {
         $kind = $mo->attackKind;
         self::faceTarget($mo, $mo->target);
         if ($kind === 'melee') {
-            if (Collision::approxDistance($mo->target->x - $mo->x, $mo->target->y - $mo->y)
-                < Defs::MELEERANGE + $mo->radius) {
-                $game->damageMobj($mo->target, $mo, (self::random() % 8 + 1) * 3);
+            if (self::checkMeleeRange($world, $mo)) {
+                $game->damageMobj($mo->target, $mo, (self::random() % 10 + 1) * 4);
             }
         } elseif ($kind === 'shotgun') {
             $game->startSound('shotgn');
@@ -457,12 +503,14 @@ final class Enemy
             }
             $mo->angle = $faced;
         } elseif (in_array($kind, ['imp', 'baron', 'caco'], true)) {
-            if (Collision::approxDistance($mo->target->x - $mo->x, $mo->target->y - $mo->y)
-                < Defs::MELEERANGE + $mo->radius) {
+            if (self::checkMeleeRange($world, $mo)) {
                 $game->startSound('claw');
-                $game->damageMobj($mo->target, $mo, (self::random() % 8 + 1) * 3);
+                $mod = $kind === 'caco' ? 6 : 8;
+                $mul = $kind === 'imp' ? 3 : 10;
+                $game->damageMobj($mo->target, $mo, (self::random() % $mod + 1) * $mul);
             } else {
                 $game->startSound('firsht');
+                $mk = $kind === 'baron' ? 'baron' : ($kind === 'caco' ? 'caco' : 'ball');
                 self::spawnMissile(
                     $world,
                     $mo,
@@ -470,17 +518,17 @@ final class Enemy
                     $kind === 'baron' ? 'BAL2' : 'BAL1',
                     ($kind === 'baron' ? 15 : 10) * Defs::FRACUNIT,
                     $kind === 'baron' ? 8 : 3,
-                    'ball'
+                    $mk,
+                    null,
+                    $game
                 );
             }
         } elseif ($kind === 'rocket') {
             $game->startSound('rlaunc');
-            self::spawnMissile($world, $mo, $mo->target, 'MISL', 20 * Defs::FRACUNIT, 20, 'rocket');
+            self::spawnMissile($world, $mo, $mo->target, 'MISL', 20 * Defs::FRACUNIT, 20, 'rocket', null, $game);
         } elseif ($kind === 'plasma') {
             $game->startSound('plasma');
-            self::spawnMissile($world, $mo, $mo->target, 'APLS', 25 * Defs::FRACUNIT, 5, 'plasma');
-        } elseif ($kind === 'skull') {
-            self::skullAttack($mo, $game);
+            self::spawnMissile($world, $mo, $mo->target, 'APLS', 25 * Defs::FRACUNIT, 5, 'plasma', null, $game);
         } elseif ($kind === 'chaingun') {
             $game->startSound('shotgn');
             $faced = $mo->angle;
@@ -498,29 +546,13 @@ final class Enemy
             }
             $mo->angle = $faced;
         } elseif ($kind === 'revenant') {
-            if (Collision::approxDistance($mo->target->x - $mo->x, $mo->target->y - $mo->y)
-                < Defs::MELEERANGE + $mo->radius) {
+            if (self::checkMeleeRange($world, $mo)) {
                 $game->startSound('skeswg');
-                $game->damageMobj($mo->target, $mo, (self::random() % 8 + 1) * 6);
+                $game->damageMobj($mo->target, $mo, (self::random() % 10 + 1) * 6);
             } else {
                 $game->startSound('skeatk');
-                $miss = self::spawnMissile($world, $mo, $mo->target, 'FATB', 10 * Defs::FRACUNIT, 10, 'tracer');
+                $miss = self::spawnMissile($world, $mo, $mo->target, 'FATB', 10 * Defs::FRACUNIT, 10, 'tracer', null, $game);
                 $miss->tracer = $mo->target;
-            }
-        } elseif ($kind === 'mancubus') {
-            $game->startSound('firsht');
-            $spread = intdiv(Defs::ANG90, 8);
-            foreach ([-$spread, 0, $spread] as $da) {
-                self::spawnMissile(
-                    $world,
-                    $mo,
-                    $mo->target,
-                    'MANF',
-                    20 * Defs::FRACUNIT,
-                    8,
-                    'fat',
-                    Compat::asU32($mo->angle + $da)
-                );
             }
         } elseif ($kind === 'pain') {
             $game->startSound('sklatk');
@@ -546,6 +578,7 @@ final class Enemy
         return $t && $t->health > 0 && Collision::checkSight($world, $mo, $t);
     }
 
+    /** A_SkullAttack: MF_SKULLFLY + aim; XY/Z stay in P_MobjThinker (not a custom fly tick). */
     private static function skullAttack(Mobj $mo, object $game): void
     {
         $dest = $mo->target;
@@ -558,36 +591,17 @@ final class Enemy
         $mo->momx = Compat::fixedMul(Defs::SKULLSPEED, Tables::fineCos($mo->angle));
         $mo->momy = Compat::fixedMul(Defs::SKULLSPEED, Tables::fineSin($mo->angle));
         $dist = Collision::approxDistance($dest->x - $mo->x, $dest->y - $mo->y);
-        $steps = max(1, Defs::SKULLSPEED ? intdiv($dist, Defs::SKULLSPEED) : 1);
-        $mo->momz = (int) (($dest->z + ($dest->height >> 1) - $mo->z) / $steps);
-    }
-
-    private static function tickSkullFly(World $world, Mobj $mo, object $game): void
-    {
-        if ($mo->momx === 0 && $mo->momy === 0) {
-            $mo->flags &= ~Defs::MF_SKULLFLY;
-            $mo->momz = 0;
-            Info::boot();
-            Thinker::setMobjState($mo, (int) Info::$liveMobjinfo[$mo->type][Info::MI_SPAWNSTATE], $world, $game);
-            return;
+        // Harbour: Int(dist / SKULLSPEED), then Int((destZ - z) / dist).
+        $steps = Defs::SKULLSPEED ? intdiv($dist, Defs::SKULLSPEED) : 1;
+        if ($steps < 1) {
+            $steps = 1;
         }
-        if (!Collision::tryMove($world, $mo, $mo->x + $mo->momx, $mo->y + $mo->momy, $game)) {
-            if ($mo->flags & Defs::MF_SKULLFLY) {
-                $mo->momx = $mo->momy = 0;
-            }
-            return;
-        }
-        $mo->z += $mo->momz;
-        if ($mo->z <= $mo->floorz || $mo->z + $mo->height > $mo->ceilingz) {
-            $mo->flags &= ~Defs::MF_SKULLFLY;
-            $mo->momx = $mo->momy = $mo->momz = 0;
-            Info::boot();
-            Thinker::setMobjState($mo, (int) Info::$liveMobjinfo[$mo->type][Info::MI_SPAWNSTATE], $world, $game);
-        }
+        $mo->momz = intdiv($dest->z + ($dest->height >> 1) - $mo->z, $steps);
     }
 
     private static function faceTarget(Mobj $mo, Mobj $t): void
     {
+        $mo->flags &= ~Defs::MF_AMBUSH;
         $mo->angle = Collision::angleTo($mo->x, $mo->y, $t->x, $t->y);
         if ($t->flags & Defs::MF_SHADOW) {
             $mo->angle = Compat::asU32($mo->angle + (self::random() - self::random()) * 2097152);
@@ -630,14 +644,13 @@ final class Enemy
                 return false;
             }
             $mo->movedir = self::DI_NODIR;
+            $opened = false;
             for ($i = count(Collision::$lastSpechit) - 1; $i >= 0; $i--) {
-                $ln = Collision::$lastSpechit[$i];
-                if ($ln->special) {
-                    $game->useSpecial($ln, $mo, 0);
-                    return true;
+                if ($game->useSpecial(Collision::$lastSpechit[$i], $mo, 0)) {
+                    $opened = true;
                 }
             }
-            return false;
+            return $opened;
         }
         $mo->flags &= ~Defs::MF_INFLOAT;
         if (($mo->flags & Defs::MF_FLOAT) === 0) {
@@ -707,7 +720,63 @@ final class Enemy
             }
         }
         $mo->movedir = self::DI_NODIR;
-        $mo->movecount = self::random() & 15;
+    }
+
+    /** FATSPREAD = ANG90/8 — same as harbour/vanilla A_FatAttack*. */
+    private static function fatSpread(): int
+    {
+        return intdiv(Defs::ANG90, 8);
+    }
+
+    private static function fatAttack1(World $world, Mobj $mo, object $game): void
+    {
+        if ($mo->target === null) {
+            return;
+        }
+        $spread = self::fatSpread();
+        self::faceTarget($mo, $mo->target);
+        $mo->angle = Compat::asU32($mo->angle + $spread);
+        self::spawnMissile($world, $mo, $mo->target, 'MANF', 20 * Defs::FRACUNIT, 8, 'fat', null, $game);
+        $miss = self::spawnMissile($world, $mo, $mo->target, 'MANF', 20 * Defs::FRACUNIT, 8, 'fat', null, $game);
+        $miss->angle = Compat::asU32($miss->angle + $spread);
+        self::setMissileMomentum($miss);
+    }
+
+    private static function fatAttack2(World $world, Mobj $mo, object $game): void
+    {
+        if ($mo->target === null) {
+            return;
+        }
+        $spread = self::fatSpread();
+        self::faceTarget($mo, $mo->target);
+        $mo->angle = Compat::asU32($mo->angle - $spread);
+        self::spawnMissile($world, $mo, $mo->target, 'MANF', 20 * Defs::FRACUNIT, 8, 'fat', null, $game);
+        $miss = self::spawnMissile($world, $mo, $mo->target, 'MANF', 20 * Defs::FRACUNIT, 8, 'fat', null, $game);
+        $miss->angle = Compat::asU32($miss->angle - $spread * 2);
+        self::setMissileMomentum($miss);
+    }
+
+    private static function fatAttack3(World $world, Mobj $mo, object $game): void
+    {
+        if ($mo->target === null) {
+            return;
+        }
+        $half = intdiv(self::fatSpread(), 2);
+        self::faceTarget($mo, $mo->target);
+        $miss = self::spawnMissile($world, $mo, $mo->target, 'MANF', 20 * Defs::FRACUNIT, 8, 'fat', null, $game);
+        $miss->angle = Compat::asU32($miss->angle - $half);
+        self::setMissileMomentum($miss);
+        $miss = self::spawnMissile($world, $mo, $mo->target, 'MANF', 20 * Defs::FRACUNIT, 8, 'fat', null, $game);
+        $miss->angle = Compat::asU32($miss->angle + $half);
+        self::setMissileMomentum($miss);
+    }
+
+    private static function setMissileMomentum(Mobj $miss): void
+    {
+        Info::boot();
+        $spd = (int) Info::$liveMobjinfo[$miss->type][Info::MI_SPEED];
+        $miss->momx = Compat::fixedMul($spd, Tables::fineCos($miss->angle));
+        $miss->momy = Compat::fixedMul($spd, Tables::fineSin($miss->angle));
     }
 
     private static function spawnMissile(
@@ -718,7 +787,8 @@ final class Enemy
         int $speed,
         int $damage,
         string $kind = 'ball',
-        ?int $ang = null
+        ?int $ang = null,
+        ?object $game = null
     ): Mobj {
         $a = $ang ?? Collision::angleTo($src->x, $src->y, $dest->x, $dest->y);
         if ($ang === null && ($dest->flags & Defs::MF_SHADOW)) {
@@ -739,7 +809,7 @@ final class Enemy
         $spd = (int) Info::$liveMobjinfo[$typ][Info::MI_SPEED];
         $dist = Collision::approxDistance($dest->x - $src->x, $dest->y - $src->y);
         $steps = max(1, $spd ? intdiv($dist, $spd) : 1);
-        $mo = Thinker::spawnMobj($world, $src->x, $src->y, $src->z + 32 * Defs::FRACUNIT, $typ, null);
+        $mo = Thinker::spawnMobj($world, $src->x, $src->y, $src->z + 32 * Defs::FRACUNIT, $typ, $game);
         $mo->target = $src;
         $mo->angle = $a;
         $mo->momx = Compat::fixedMul($spd, Tables::fineCos($a));
@@ -749,12 +819,12 @@ final class Enemy
         if ($kind === 'tracer') {
             $mo->tracer = $dest;
         }
-        self::checkMissileSpawn($mo);
+        self::checkMissileSpawn($mo, $world, $game);
         return $mo;
     }
 
-    /** P_CheckMissileSpawn: burn one P_Random, then nudge out of the shooter. */
-    private static function checkMissileSpawn(Mobj $mo): void
+    /** P_CheckMissileSpawn: one P_Random, nudge, explode if the spot is blocked. */
+    private static function checkMissileSpawn(Mobj $mo, ?World $world = null, ?object $game = null): void
     {
         $mo->tics -= self::random() & 3;
         if ($mo->tics < 1) {
@@ -763,6 +833,9 @@ final class Enemy
         $mo->x += $mo->momx >> 1;
         $mo->y += $mo->momy >> 1;
         $mo->z += $mo->momz >> 1;
+        if ($world !== null && $game !== null && !Collision::tryMove($world, $mo, $mo->x, $mo->y, $game)) {
+            self::explodeMissile($world, $mo, $game);
+        }
     }
 
     public static function spawnPlayerMissile(
@@ -771,7 +844,8 @@ final class Enemy
         string $sprite,
         int $speed,
         int $damage,
-        string $kind
+        string $kind,
+        ?object $game = null
     ): void {
         $typ = match ($kind) {
             'rocket' => Info::MT_ROCKET,
@@ -789,7 +863,7 @@ final class Enemy
         $mo->momy = Compat::fixedMul($spd, Tables::fineSin($ang));
         $mo->momz = Compat::fixedMul($spd, $aim['slope']);
         $mo->missileKind = $kind;
-        self::checkMissileSpawn($mo);
+        self::checkMissileSpawn($mo, $world, $game);
     }
 
     private static function tickMissile(World $world, Mobj $mo, object $game): void
@@ -810,37 +884,51 @@ final class Enemy
         }
         $nx = $mo->x + $mo->momx;
         $ny = $mo->y + $mo->momy;
-        $chk = Collision::checkPosition($world, $mo, $nx, $ny);
-        if ($chk->blocked || !Collision::tryMove($world, $mo, $nx, $ny, $game)) {
-            self::explodeMissile($world, $mo, $game, $chk->hitThing === $mo ? null : $chk->hitThing);
+        if (!Collision::tryMove($world, $mo, $nx, $ny, $game)) {
+            self::explodeMissile($world, $mo, $game);
             return;
         }
         $mo->z += $mo->momz;
         if ($mo->z <= $mo->floorz || $mo->z + $mo->height > $mo->ceilingz) {
-            self::explodeMissile($world, $mo, $game, null);
+            self::explodeMissile($world, $mo, $game);
             return;
         }
         $mo->frame = ($mo->frame + 1) & 1;
     }
 
+    /** P_RadiusAttack: blockmap walk (yl..yh, xl..xh) so damage/kill RNG order matches vanilla. */
     private static function radiusAttack(World $world, Mobj $spot, ?Mobj $source, int $damage, object $game): void
     {
-        foreach (array_values($world->mobjs) as $o) {
-            if ($o === $spot || !($o->flags & Defs::MF_SHOOTABLE) || in_array($o->type, [Info::MT_CYBORG, Info::MT_SPIDER], true)) {
-                continue;
-            }
-            $dx = abs($o->x - $spot->x);
-            $dy = abs($o->y - $spot->y);
-            $dist = ($dx > $dy ? $dx : $dy) - $o->radius;
-            if ($dist < 0) {
-                $dist = 0;
-            }
-            $dist >>= 16;
-            if ($dist >= $damage) {
-                continue;
-            }
-            if (Collision::checkSight($world, $o, $spot)) {
-                $game->damageMobj($o, $source ?? $spot, $damage - $dist, $spot);
+        $distMap = $damage * Defs::FRACUNIT + Defs::MAXRADIUS;
+        $yh = Compat::shar($spot->y + $distMap - $world->bmaporgy, Defs::MAPBLOCKSHIFT);
+        $yl = Compat::shar($spot->y - $distMap - $world->bmaporgy, Defs::MAPBLOCKSHIFT);
+        $xh = Compat::shar($spot->x + $distMap - $world->bmaporgx, Defs::MAPBLOCKSHIFT);
+        $xl = Compat::shar($spot->x - $distMap - $world->bmaporgx, Defs::MAPBLOCKSHIFT);
+        $src = $source ?? $spot;
+        for ($y = $yl; $y <= $yh; ++$y) {
+            for ($x = $xl; $x <= $xh; ++$x) {
+                Collision::blockThings($world, $x, $y, function (Mobj $o) use ($world, $spot, $src, $damage, $game): bool {
+                    if (($o->flags & Defs::MF_SHOOTABLE) === 0) {
+                        return true;
+                    }
+                    if ($o->type === Info::MT_CYBORG || $o->type === Info::MT_SPIDER) {
+                        return true;
+                    }
+                    $dx = abs($o->x - $spot->x);
+                    $dy = abs($o->y - $spot->y);
+                    $dist = ($dx > $dy ? $dx : $dy) - $o->radius;
+                    if ($dist < 0) {
+                        $dist = 0;
+                    }
+                    $dist >>= Defs::FRACBITS;
+                    if ($dist >= $damage) {
+                        return true;
+                    }
+                    if (Collision::checkSight($world, $o, $spot)) {
+                        $game->damageMobj($o, $src, $damage - $dist, $spot);
+                    }
+                    return true;
+                });
             }
         }
     }
@@ -964,22 +1052,24 @@ final class Enemy
 
     private static function painShootSkull(World $world, Mobj $actor, object $game, int $ang): void
     {
+        // A_PainShootSkull (Harbour/vanilla): count all MT_SKULL thinkers (incl. corpses).
         $n = 0;
         foreach ($world->mobjs as $other) {
-            if ($other->type === Info::MT_SKULL && $other->health > 0) {
+            if ($other->type === Info::MT_SKULL) {
                 ++$n;
             }
         }
-        if ($n >= 21) {
+        if ($n > 20) {
             return;
         }
-        $pre = 4 * Defs::FRACUNIT + intdiv(3 * $actor->radius, 2);
+        Info::boot();
+        $skullRad = (int) Info::$liveMobjinfo[Info::MT_SKULL][Info::MI_RADIUS];
+        $pre = 4 * Defs::FRACUNIT + intdiv(3 * ($actor->radius + $skullRad), 2);
         $x = $actor->x + Compat::fixedMul($pre, Tables::fineCos($ang));
         $y = $actor->y + Compat::fixedMul($pre, Tables::fineSin($ang));
-        $skull = Thinker::spawnMobj($world, $x, $y, $actor->z, Info::MT_SKULL, $game);
-        $skull->angle = $ang;
-        $chk = Collision::checkPosition($world, $skull, $skull->x, $skull->y);
-        if ($chk->blocked) {
+        $z = $actor->z + 8 * Defs::FRACUNIT;
+        $skull = Thinker::spawnMobj($world, $x, $y, $z, Info::MT_SKULL, $game);
+        if (!Collision::tryMove($world, $skull, $skull->x, $skull->y, $game)) {
             $game->damageMobj($skull, $actor, 10000, $actor);
             return;
         }
@@ -1082,7 +1172,7 @@ final class Enemy
         $dest = $targs[self::$brainTargetOn % count($targs)];
         ++self::$brainTargetOn;
         $game->startSound('bospit');
-        $miss = self::spawnMissile($world, $actor, $dest, 'BOSF', 10 * Defs::FRACUNIT, 0, 'spawncube');
+        $miss = self::spawnMissile($world, $actor, $dest, 'BOSF', 10 * Defs::FRACUNIT, 0, 'spawncube', null, $game);
         $miss->tracer = $dest;
         $miss->flags |= Defs::MF_NOCLIP;
     }
@@ -1198,11 +1288,12 @@ final class Enemy
         $ymove = $mo->momy;
         $half = intdiv(Defs::MAXMOVE, 2);
         while ($xmove !== 0 || $ymove !== 0) {
+            // Vanilla: step uses C `/2` (toward zero); remainder uses `>>= 1` (arithmetic).
             if ($xmove > $half || $ymove > $half) {
                 $ptryx = $mo->x + self::trunc2($xmove);
                 $ptryy = $mo->y + self::trunc2($ymove);
-                $xmove = self::trunc2($xmove);
-                $ymove = self::trunc2($ymove);
+                $xmove = Compat::asI32($xmove) >> 1;
+                $ymove = Compat::asI32($ymove) >> 1;
             } else {
                 $ptryx = $mo->x + $xmove;
                 $ptryy = $mo->y + $ymove;
@@ -1230,7 +1321,7 @@ final class Enemy
                     Thinker::removeMobj($world, $mo);
                     return;
                 }
-                self::explodeMissile($world, $mo, $game, null);
+                self::explodeMissile($world, $mo, $game);
                 return;
             } else {
                 $mo->momx = $mo->momy = 0;
@@ -1254,7 +1345,7 @@ final class Enemy
                 || $mo->momy > intdiv(Defs::FRACUNIT, 4)
                 || $mo->momy < -intdiv(Defs::FRACUNIT, 4)
             ) {
-                $sec = Collision::pointInSubsector($world, $mo->x, $mo->y)->sector;
+                $sec = ($mo->subsector ?? Collision::pointInSubsector($world, $mo->x, $mo->y))->sector;
                 if ($mo->floorz !== $sec->floorheight) {
                     return;
                 }
@@ -1355,68 +1446,24 @@ final class Enemy
      */
     private static function missileFloorHit(World $world, Mobj $mo, object $game): void
     {
-        self::explodeMissile($world, $mo, $game, null);
+        self::explodeMissile($world, $mo, $game);
     }
 
-    /** The blast reached this body, including a shot that died on the floor under it. */
-    public static function missileReaches(Mobj $mo, Mobj $other, int $x, int $y, int $z): bool
+    /** P_ExplodeMissile: no damage here — PIT_CheckThing already hit the target. */
+    private static function explodeMissile(World $world, Mobj $mo, object $game): void
     {
-        if ($other === $mo || $other === $mo->target || $other->health <= 0) {
-            return false;
-        }
-        if (($other->flags & Defs::MF_SHOOTABLE) === 0) {
-            return false;
-        }
-        $reach = $other->radius + $mo->radius;
-        if (abs($other->x - $x) >= $reach || abs($other->y - $y) >= $reach) {
-            return false;
-        }
-        $slack = 64 * Defs::FRACUNIT;
-        $z0 = $z;
-        $z1 = $z + $mo->momz;
-        $low = min($z0, $z1) - $slack;
-        $high = max($z0, $z1) + $mo->height + $slack;
-        if ($z <= $mo->floorz) {
-            $low = min($low, $mo->floorz - $slack);
-            $high = max($high, $mo->floorz + $slack);
-        }
-        return $low <= $other->z + $other->height && $high >= $other->z;
-    }
-
-    private static function missileVictim(World $world, Mobj $mo): ?Mobj
-    {
-        $spots = [[$mo->x, $mo->y, $mo->z]];
-        if ($mo->tmx !== $mo->x || $mo->tmy !== $mo->y) {
-            $spots[] = [$mo->tmx, $mo->tmy, $mo->z];
-        }
-        $best = null;
-        $bestDist = PHP_INT_MAX;
-        foreach ($world->mobjs as $other) {
-            foreach ($spots as [$x, $y, $z]) {
-                if (!self::missileReaches($mo, $other, $x, $y, $z)) {
-                    continue;
-                }
-                $dist = max(abs($other->x - $x), abs($other->y - $y));
-                if ($dist < $bestDist) {
-                    $bestDist = $dist;
-                    $best = $other;
-                }
-            }
-        }
-        return $best;
-    }
-
-    private static function explodeMissile(World $world, Mobj $mo, object $game, ?Mobj $hit): void
-    {
-        $hit = $hit ?? self::missileVictim($world, $mo);
-        if ($hit) {
-            Info::boot();
-            $dmg = $mo->damage ?: (int) Info::$liveMobjinfo[$mo->type][Info::MI_DAMAGE];
-            $game->damageMobj($hit, $mo->target ?? $mo, $dmg * ((self::random() % 8) + 1), $mo);
-        }
         $mo->momx = $mo->momy = $mo->momz = 0;
-        $mo->flags &= ~Defs::MF_MISSILE;
+        Info::boot();
         Thinker::setMobjState($mo, (int) Info::$liveMobjinfo[$mo->type][Info::MI_DEATHSTATE], $world, $game);
+        $mo->tics -= self::random() & 3;
+        if ($mo->tics < 1) {
+            $mo->tics = 1;
+        }
+        $mo->flags &= ~Defs::MF_MISSILE;
+        $sfx = (string) (Info::$liveMobjinfo[$mo->type][Info::MI_DEATHSOUND] ?? '');
+        if ($sfx !== '' && $sfx !== '0') {
+            $game->startSound($sfx);
+        }
     }
 
     public static function callAction(string $name, Mobj $mo, World $world, ?object $game): void
@@ -1442,9 +1489,14 @@ final class Enemy
         } elseif ($name === 'Fall') {
             $mo->flags &= ~Defs::MF_SOLID;
         } elseif ($name === 'Scream') {
-            $s = Info::$liveMobjinfo[$mo->type][Info::MI_DEATHSOUND] ?? '';
-            if ($s) {
-                $game->startSound((string) $s);
+            $s = (string) (Info::$liveMobjinfo[$mo->type][Info::MI_DEATHSOUND] ?? '');
+            if ($s === 'podth1' || $s === 'podth2' || $s === 'podth3') {
+                $s = ['podth1', 'podth2', 'podth3'][self::random() % 3];
+            } elseif ($s === 'bgdth1' || $s === 'bgdth2') {
+                $s = ['bgdth1', 'bgdth2'][self::random() % 2];
+            }
+            if ($s !== '') {
+                $game->startSound($s);
             }
         } elseif ($name === 'XScream') {
             $game->startSound('slop');
@@ -1455,16 +1507,22 @@ final class Enemy
             }
         } elseif ($name === 'Explode') {
             self::radiusAttack($world, $mo, $mo->target, 128, $game);
+        } elseif ($name === 'SkullAttack') {
+            // Direct A_SkullAttack (do not route through doAttack's extra FaceTarget).
+            self::skullAttack($mo, $game);
         } elseif (in_array($name, ['PosAttack', 'SPosAttack', 'CPosAttack', 'TroopAttack', 'SargAttack',
-            'HeadAttack', 'BruisAttack', 'SkullAttack', 'CyberAttack', 'BspiAttack',
+            'HeadAttack', 'BruisAttack', 'CyberAttack', 'BspiAttack',
             'PainAttack', 'CPosRefire', 'SpidRefire'], true)) {
             $map = [
                 'PosAttack' => 'hitscan', 'SPosAttack' => 'shotgun', 'CPosAttack' => 'chaingun',
                 'TroopAttack' => 'imp', 'SargAttack' => 'melee', 'HeadAttack' => 'caco',
-                'BruisAttack' => 'baron', 'SkullAttack' => 'skull', 'CyberAttack' => 'rocket',
+                'BruisAttack' => 'baron', 'CyberAttack' => 'rocket',
                 'BspiAttack' => 'plasma', 'PainAttack' => 'pain',
             ];
             if (isset($map[$name])) {
+                if ($mo->target === null) {
+                    return;
+                }
                 $mo->attackKind = $map[$name];
                 self::doAttack($world, $mo, $game);
             } elseif ($name === 'CPosRefire' || $name === 'SpidRefire') {
@@ -1501,14 +1559,20 @@ final class Enemy
                 self::faceTarget($mo, $mo->target);
             }
             $game->startSound('skeswg');
-        } elseif ($name === 'SkelFist' || $name === 'SkelMissile' || $name === 'FatRaise'
-            || $name === 'FatAttack1' || $name === 'FatAttack2' || $name === 'FatAttack3') {
-            $mo->attackKind = $name === 'SkelFist' ? 'melee' : ($name === 'SkelMissile' ? 'revenant' : 'mancubus');
-            if ($name === 'FatRaise') {
-                $game->startSound('manatk');
-            } else {
-                self::doAttack($world, $mo, $game);
+        } elseif ($name === 'SkelFist' || $name === 'SkelMissile') {
+            $mo->attackKind = $name === 'SkelFist' ? 'melee' : 'revenant';
+            self::doAttack($world, $mo, $game);
+        } elseif ($name === 'FatRaise') {
+            if ($mo->target) {
+                self::faceTarget($mo, $mo->target);
             }
+            $game->startSound('manatk');
+        } elseif ($name === 'FatAttack1') {
+            self::fatAttack1($world, $mo, $game);
+        } elseif ($name === 'FatAttack2') {
+            self::fatAttack2($world, $mo, $game);
+        } elseif ($name === 'FatAttack3') {
+            self::fatAttack3($world, $mo, $game);
         } elseif ($name === 'Tracer') {
             if (($game->leveltime & 3) === 0) {
                 self::tracerHome($mo);

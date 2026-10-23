@@ -32,6 +32,7 @@ final class VerticalDoor
 final class Plat
 {
     public bool $dead = false;
+    public bool $crush = false;
 
     public function __construct(
         public Sector $sector,
@@ -111,6 +112,7 @@ final class Specials
     public bool $exitRequested = false;
     public bool $secretExit = false;
     public array $switchMap = [];
+    public ?object $game = null;
 
     private const SWITCH_PAIRS = [
         ['SW1BRCOM', 'SW2BRCOM'], ['SW1BRN1', 'SW2BRN1'], ['SW1BRN2', 'SW2BRN2'],
@@ -139,7 +141,6 @@ final class Specials
                 $this->switchMap[$ib] = $ia;
             }
         }
-        $this->spawnSpecials();
     }
 
     /** T_MovePlane + P_ChangeSector (p_floor.prg): move the plane then carry things with it. */
@@ -161,11 +162,11 @@ final class Specials
         } else {
             $s->$prop += $speed;
         }
-        $nofit = Collision::changeSector($this->world, $s, $crush);
+        $nofit = Collision::changeSector($this->world, $s, $crush, $this->game);
         if ($nofit) {
             if (!$crush || $past) {
                 $s->$prop = $last;
-                Collision::changeSector($this->world, $s, $crush);
+                Collision::changeSector($this->world, $s, $crush, $this->game);
             }
             return $past ? Defs::RESULT_PASTDEST : Defs::RESULT_CRUSHED;
         }
@@ -207,6 +208,16 @@ final class Specials
         $h = -500 * Defs::FRACUNIT;
         foreach (self::surroundingSectors($s) as $o) {
             $h = max($h, $o->floorheight);
+        }
+        return $h;
+    }
+
+    /** turboLower: highest surrounding floor, then +8 if that is not the current height. */
+    public static function turboLowerDest(Sector $s): int
+    {
+        $h = self::highestFloor($s);
+        if ($h !== $s->floorheight) {
+            $h += 8 * Defs::FRACUNIT;
         }
         return $h;
     }
@@ -266,9 +277,14 @@ final class Specials
             : [];
     }
 
-    public function tick(): void
+    /** Lights are map thinkers: run before mobjs so P_Random order matches vanilla. */
+    public function tickLightsEarly(): void
     {
         $this->tickLights();
+    }
+
+    public function tick(): void
+    {
         foreach ($this->scrollLines as $ln) {
             if ($ln->sides[0]) {
                 $ln->sides[0]->textureoffset += Defs::FRACUNIT;
@@ -308,20 +324,41 @@ final class Specials
 
     private function tickDoor(VerticalDoor $d): void
     {
+        // T_VerticalDoor (p_doors.prg / vanilla): crush while closing reverses open.
         if ($d->direction === 0) {
-            if (--$d->topcountdown <= 0) {
-                if (in_array($d->type, [Defs::VLD_NORMAL, Defs::VLD_BLAZERAISE, Defs::VLD_CLOSE], true)) {
+            if (--$d->topcountdown === 0) {
+                if ($d->type === Defs::VLD_BLAZERAISE) {
                     $d->direction = -1;
-                    $this->sound->play($d->type === Defs::VLD_BLAZERAISE ? 'bdcls' : 'dorcls');
-                } elseif (in_array($d->type, [Defs::VLD_CLOSE30, Defs::VLD_RAISEIN5], true)) {
+                    $this->sound->play('bdcls');
+                } elseif ($d->type === Defs::VLD_NORMAL) {
+                    $d->direction = -1;
+                    $this->sound->play('dorcls');
+                } elseif ($d->type === Defs::VLD_CLOSE30) {
                     $d->direction = 1;
                     $this->sound->play('doropn');
                 }
             }
             return;
         }
+        if ($d->direction === 2) {
+            // Initial wait (raise-in-5).
+            if (--$d->topcountdown === 0 && $d->type === Defs::VLD_RAISEIN5) {
+                $d->direction = 1;
+                $d->type = Defs::VLD_NORMAL;
+                $this->sound->play('doropn');
+            }
+            return;
+        }
         $dest = $d->direction === 1 ? $d->topheight : $d->sector->floorheight;
-        if ($this->movePlane($d->sector, $d->speed, $dest, 1, $d->direction) !== Defs::RESULT_PASTDEST) {
+        $res = $this->movePlane($d->sector, $d->speed, $dest, 1, $d->direction);
+        if ($d->direction === -1 && $res === Defs::RESULT_CRUSHED) {
+            if ($d->type !== Defs::VLD_BLAZECLOSE && $d->type !== Defs::VLD_CLOSE) {
+                $d->direction = 1;
+                $this->sound->play('doropn');
+            }
+            return;
+        }
+        if ($res !== Defs::RESULT_PASTDEST) {
             return;
         }
         if ($d->direction === 1) {
@@ -332,36 +369,62 @@ final class Specials
                 $d->sector->specialdata = null;
                 $d->dead = true;
             }
-        } elseif ($d->type === Defs::VLD_CLOSE30) {
+            return;
+        }
+        // Closing finished.
+        if ($d->type === Defs::VLD_CLOSE30) {
             $d->direction = 0;
             $d->topcountdown = Defs::TICRATE * 30;
-        } else {
-            $d->sector->specialdata = null;
-            $d->dead = true;
+            return;
         }
+        if (in_array($d->type, [Defs::VLD_BLAZERAISE, Defs::VLD_BLAZECLOSE], true)) {
+            $this->sound->play('bdcls');
+        }
+        $d->sector->specialdata = null;
+        $d->dead = true;
     }
 
+    /** T_PlatRaise: on crush while rising (and not a crushing plat), reverse to down. */
     private function tickPlat(Plat $p): void
     {
         if ($p->status === Defs::PLAT_WAITING) {
-            if (--$p->count <= 0) {
-                $p->status = $p->sector->floorheight <= $p->low ? Defs::PLAT_UP : Defs::PLAT_DOWN;
+            // Harbour/vanilla: if (!--count) and floorheight == low (not <=).
+            if (--$p->count === 0) {
+                $p->status = $p->sector->floorheight === $p->low ? Defs::PLAT_UP : Defs::PLAT_DOWN;
                 $this->sound->play('pstart');
             }
             return;
         }
         $up = $p->status === Defs::PLAT_UP;
-        if ($this->movePlane($p->sector, $p->speed, $up ? $p->high : $p->low, 0, $up ? 1 : -1) !== Defs::RESULT_PASTDEST) {
+        $res = $this->movePlane(
+            $p->sector,
+            $p->speed,
+            $up ? $p->high : $p->low,
+            0,
+            $up ? 1 : -1,
+            $p->crush
+        );
+        if ($up && $res === Defs::RESULT_CRUSHED && !$p->crush) {
+            $p->count = $p->wait;
+            $p->status = Defs::PLAT_DOWN;
+            $this->sound->play('pstart');
             return;
         }
-        if (!$up || $p->type === Defs::PLAT_PERPETUAL) {
-            $p->status = Defs::PLAT_WAITING;
-            $p->count = $p->wait;
-            $this->sound->play('pstop');
-        } else {
+        if ($res !== Defs::RESULT_PASTDEST) {
+            return;
+        }
+        // Harbour: both up and down go to waiting; DWUS/blaze/raise* remove on up.
+        $p->count = $p->wait;
+        $p->status = Defs::PLAT_WAITING;
+        $this->sound->play('pstop');
+        if ($up && in_array($p->type, [
+            Defs::PLAT_DWUS,
+            Defs::PLAT_BLAZEDWUS,
+            Defs::PLAT_RAISEANDCHANGE,
+            Defs::PLAT_RAISETONEARESTANDCHANGE,
+        ], true)) {
             $p->sector->specialdata = null;
             $p->dead = true;
-            $this->sound->play('pstop');
         }
     }
 
@@ -404,11 +467,6 @@ final class Specials
     private function spawnDoor(Sector $s, int $type, bool $reverse = false): bool
     {
         if ($s->specialdata) {
-            if ($s->specialdata instanceof VerticalDoor
-                && in_array($type, [Defs::VLD_NORMAL, Defs::VLD_BLAZERAISE], true)) {
-                $s->specialdata->direction = $s->specialdata->direction === -1 ? 1 : -1;
-                return true;
-            }
             return false;
         }
         $close = in_array($type, [Defs::VLD_CLOSE, Defs::VLD_BLAZECLOSE, Defs::VLD_CLOSE30], true);
@@ -477,6 +535,9 @@ final class Specials
     {
         $p = $thing->player;
         $sp = $line->special;
+        if ($p === null && in_array($sp, [26, 27, 28, 32, 33, 34], true)) {
+            return;
+        }
         $locks = [
             [[26, 32], Defs::IT_BLUECARD, Defs::IT_BLUESKULL, 'blue'],
             [[27, 34], Defs::IT_YELLOWCARD, Defs::IT_YELLOWSKULL, 'yellow'],
@@ -491,6 +552,17 @@ final class Specials
         }
         $s = $line->sides[1]?->sector;
         if (!$s) {
+            return;
+        }
+        if ($s->specialdata && in_array($sp, [1, 26, 27, 28, 117], true)) {
+            $busy = $s->specialdata;
+            if ($busy instanceof VerticalDoor && $busy->direction === -1) {
+                $busy->direction = 1;
+            } elseif ($p !== null && $busy instanceof VerticalDoor) {
+                $busy->direction = -1;
+            } elseif ($p !== null && $busy instanceof Plat) {
+                $busy->wait = -1;
+            }
             return;
         }
         if (in_array($sp, [1, 26, 27, 28], true)) {
@@ -516,18 +588,20 @@ final class Specials
             if ($s->specialdata) {
                 continue;
             }
+            $low = self::lowestFloor($s);
+            // Harbour EV_DoPlat: never raise low above current floor.
+            if ($low > $s->floorheight) {
+                $low = $s->floorheight;
+            }
             $p = new Plat(
                 $s,
                 $blaze ? Defs::PLAT_BLAZEDWUS : Defs::PLAT_DWUS,
                 Defs::PLAT_DOWN,
-                Defs::PLATSPEED * ($blaze ? 8 : 1),
-                self::lowestFloor($s),
+                Defs::PLATSPEED * ($blaze ? 8 : 4),
+                $low,
                 $s->floorheight,
                 Defs::PLATWAIT * Defs::TICRATE
             );
-            if ($p->low === $p->high) {
-                $p->low = $p->high - 8 * Defs::FRACUNIT;
-            }
             $s->specialdata = $p;
             $this->thinkers[] = $p;
             $this->sound->play('pstart');
@@ -664,8 +738,9 @@ final class Specials
         }
     }
 
-    private function pRandom(): int
+    private function pRandom(string $why = 'light'): int
     {
+        // Tag via Enemy trace when enabled (publicRandom has no tag); rely on backtrace fn.
         return Enemy::publicRandom();
     }
 
@@ -777,7 +852,11 @@ final class Specials
             if ($pic !== null) {
                 $s->floorpic = $pic;
             }
-            $p = new Plat($s, Defs::PLAT_DWUS, Defs::PLAT_UP, intdiv(Defs::PLATSPEED, 2), $s->floorheight, $high, 0);
+            if ($amount === 0) {
+                $s->special = 0;
+            }
+            $type = $amount === 0 ? Defs::PLAT_RAISETONEARESTANDCHANGE : Defs::PLAT_RAISEANDCHANGE;
+            $p = new Plat($s, $type, Defs::PLAT_UP, intdiv(Defs::PLATSPEED, 2), $s->floorheight, $high, 0);
             $s->specialdata = $p;
             $this->thinkers[] = $p;
             $this->sound->play('pstart');
@@ -933,7 +1012,8 @@ final class Specials
             return;
         }
         $s->special = 0;
-        $d = new VerticalDoor($s, Defs::VLD_CLOSE, 0, $s->ceilingheight, Defs::VDOORSPEED, Defs::VDOORWAIT, 30 * Defs::TICRATE);
+        // Harbour: type vld_normal, direction 0, countdown 30*TICRATE.
+        $d = new VerticalDoor($s, Defs::VLD_NORMAL, 0, $s->ceilingheight, Defs::VDOORSPEED, Defs::VDOORWAIT, 30 * Defs::TICRATE);
         $s->specialdata = $d;
         $this->thinkers[] = $d;
     }
@@ -944,7 +1024,8 @@ final class Specials
             return;
         }
         $s->special = 0;
-        $d = new VerticalDoor($s, Defs::VLD_RAISEIN5, 0, self::lowestCeiling($s) - 4 * Defs::FRACUNIT, Defs::VDOORSPEED, Defs::VDOORWAIT, 5 * 60 * Defs::TICRATE);
+        // Harbour: direction 2 (initial wait), type vld_raiseIn5Mins.
+        $d = new VerticalDoor($s, Defs::VLD_RAISEIN5, 2, self::lowestCeiling($s) - 4 * Defs::FRACUNIT, Defs::VDOORSPEED, Defs::VDOORWAIT, 5 * 60 * Defs::TICRATE);
         $s->specialdata = $d;
         $this->thinkers[] = $d;
     }
@@ -998,6 +1079,9 @@ final class Specials
 
     public function shootSpecial(Line $line, Mobj $thing): void
     {
+        if ($thing->player === null && $line->special !== 46) {
+            return;
+        }
         $sp = $line->special;
         if ($sp === 24 && $this->doFloor($line, [self::class, 'raiseFloorDest'], 1)) {
             $this->changeSwitch($line, 0);
@@ -1034,19 +1118,27 @@ final class Specials
         $this->sound->play($sound);
     }
 
-    public function useSpecial(Line $line, Mobj $thing, int $side): void
+    public function useSpecial(Line $line, Mobj $thing, int $side): bool
     {
-        if ($side !== 0) {
-            return;
+        if ($side !== 0 && $line->special !== 124) {
+            return false;
+        }
+        if ($thing->player === null) {
+            if (($line->flags & Defs::ML_SECRET) !== 0) {
+                return false;
+            }
+            if (!in_array($line->special, [1, 32, 33, 34], true)) {
+                return false;
+            }
         }
         $sp = $line->special;
         if (in_array($sp, [1, 26, 27, 28, 31, 32, 33, 34, 117, 118], true)) {
             $this->verticalDoor($line, $thing);
-            return;
+            return true;
         }
         if (in_array($sp, [99, 133, 134, 135, 136, 137], true)) {
             $this->lockedBlazeDoor($line, $thing, $sp);
-            return;
+            return true;
         }
         if ($sp === 11 || $sp === 51) {
             $this->changeSwitch($line, 0);
@@ -1054,7 +1146,7 @@ final class Specials
             if ($sp === 51) {
                 $this->secretExit = true;
             }
-            return;
+            return true;
         }
         $once = [
             29 => fn () => $this->doDoor($line, Defs::VLD_NORMAL),
@@ -1067,7 +1159,7 @@ final class Specials
             122 => fn () => $this->doPlatDwus($line, true),
             18 => fn () => $this->doFloor($line, fn ($s) => self::nextHighestFloor($s, $s->floorheight), 1),
             23 => fn () => $this->doFloor($line, [self::class, 'lowestFloor'], -1),
-            71 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1),
+            71 => fn () => $this->doFloor($line, [self::class, 'turboLowerDest'], -1, Defs::FLOORSPEED * 4),
             101 => fn () => $this->doFloor($line, fn ($s) => self::nextHighestFloor($s, $s->floorheight), 1),
             102 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1),
             7 => fn () => $this->doStairs($line, 8 * Defs::FRACUNIT, intdiv(Defs::FLOORSPEED, 4)),
@@ -1091,12 +1183,12 @@ final class Specials
             114 => fn () => $this->doDoor($line, Defs::VLD_BLAZERAISE),
             115 => fn () => $this->doDoor($line, Defs::VLD_BLAZEOPEN),
             116 => fn () => $this->doDoor($line, Defs::VLD_BLAZECLOSE),
-            120 => fn () => $this->doPlatDwus($line, true),
+            // 120 is WR blaze DWUS (walk only); SR blaze is 123 (Harbour p_switch.prg).
             123 => fn () => $this->doPlatDwus($line, true),
             45 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1),
             60 => fn () => $this->doFloor($line, [self::class, 'lowestFloor'], -1),
             64 => fn () => $this->doFloor($line, [self::class, 'raiseFloorDest'], 1),
-            70 => fn () => $this->doFloor($line, [self::class, 'highestFloor'], -1, Defs::FLOORSPEED * 4),
+            70 => fn () => $this->doFloor($line, [self::class, 'turboLowerDest'], -1, Defs::FLOORSPEED * 4),
             43 => fn () => $this->doCrusher($line, Defs::CEIL_LOWERTOFLOOR),
             65 => fn () => $this->doFloor($line, [self::class, 'raiseFloorCrushDest'], 1, null, true),
             66 => fn () => $this->doPlatRaise($line, 24 * Defs::FRACUNIT),
@@ -1114,10 +1206,22 @@ final class Specials
         } elseif (isset($repeat[$sp]) && $repeat[$sp]()) {
             $this->changeSwitch($line, 1);
         }
+        return true;
     }
 
     public function crossSpecial(Line $line, int $side, Mobj $thing): void
     {
+        if ($thing->player === null) {
+            if (in_array($thing->type, [
+                Info::MT_ROCKET, Info::MT_PLASMA, Info::MT_BFG,
+                Info::MT_TROOPSHOT, Info::MT_HEADSHOT, Info::MT_BRUISERSHOT,
+            ], true)) {
+                return;
+            }
+            if (!in_array($line->special, [39, 97, 125, 126, 4, 10, 88], true)) {
+                return;
+            }
+        }
         $sp = $line->special;
         $clear = true;
         if ($sp === 2) {
@@ -1153,7 +1257,7 @@ final class Specials
         } elseif ($sp === 35) {
             $this->lightTurnOn($line, 35);
         } elseif ($sp === 36) {
-            $this->doFloor($line, [self::class, 'highestFloor'], -1, Defs::FLOORSPEED * 4);
+            $this->doFloor($line, [self::class, 'turboLowerDest'], -1, Defs::FLOORSPEED * 4);
         } elseif ($sp === 37) {
             $this->lowerAndChange($line);
         } elseif ($sp === 38) {
@@ -1226,7 +1330,7 @@ final class Specials
             $this->teleport($line, $side, $thing);
             $clear = false;
         } elseif ($sp === 98) {
-            $this->doFloor($line, [self::class, 'highestFloor'], -1, Defs::FLOORSPEED * 4);
+            $this->doFloor($line, [self::class, 'turboLowerDest'], -1, Defs::FLOORSPEED * 4);
             $clear = false;
         } elseif ($sp === 100) {
             $this->doStairs($line, 16 * Defs::FRACUNIT, Defs::FLOORSPEED * 4);
@@ -1284,13 +1388,17 @@ final class Specials
         }
     }
 
-    /** EV_Teleport (p_telept.prg): walk special 39 onto MT_TELEPORTMAN (thing 14). */
+    /**
+     * EV_Teleport (p_telept.prg / vanilla): special 39/97/125/126 onto MT_TELEPORTMAN.
+     * P_TeleportMove + two MT_TFOG (RNG) — required for DEMO sync.
+     */
     private function teleport(Line $line, int $side, Mobj $thing): void
     {
         if ($side === 1 || ($thing->flags & Defs::MF_MISSILE) !== 0) {
             return;
         }
         $tag = $line->tag;
+        $game = $this->game;
         foreach ($this->world->sectors as $i => $sector) {
             if ($sector->tag !== $tag) {
                 continue;
@@ -1299,25 +1407,32 @@ final class Specials
                 if ($dest->type !== Info::MT_TELEPORTMAN) {
                     continue;
                 }
-                $destSector = Collision::pointInSubsector($this->world, $dest->x, $dest->y)->sector;
-                if ($destSector !== $sector && $destSector->iSector !== $i) {
+                $destSector = ($dest->subsector ?? Collision::pointInSubsector($this->world, $dest->x, $dest->y))->sector;
+                if ($destSector->iSector !== $i) {
                     continue;
                 }
-                $thing->momx = $thing->momy = $thing->momz = 0;
-                Collision::unsetThingPosition($this->world, $thing);
-                $thing->x = $dest->x;
-                $thing->y = $dest->y;
-                $ss = Collision::pointInSubsector($this->world, $thing->x, $thing->y);
-                $thing->floorz = $ss->sector->floorheight;
-                $thing->ceilingz = $ss->sector->ceilingheight;
+                $oldx = $thing->x;
+                $oldy = $thing->y;
+                $oldz = $thing->z;
+                if (!Collision::teleportMove($this->world, $thing, $dest->x, $dest->y, $game)) {
+                    return;
+                }
+                // gameversion != exe_final (Doom 1.9 / Ultimate / Doom2 demos): snap to floor.
                 $thing->z = $thing->floorz;
-                $thing->angle = $dest->angle;
-                Collision::setThingPosition($this->world, $thing);
                 if ($thing->player !== null) {
                     $thing->player->viewz = $thing->z + $thing->player->viewheight;
+                }
+                Thinker::spawnMobj($this->world, $oldx, $oldy, $oldz, Info::MT_TFOG, $game);
+                $this->sound->play('telept');
+                $fogx = $dest->x + 20 * Tables::fineCos($dest->angle);
+                $fogy = $dest->y + 20 * Tables::fineSin($dest->angle);
+                Thinker::spawnMobj($this->world, $fogx, $fogy, $thing->z, Info::MT_TFOG, $game);
+                $this->sound->play('telept');
+                if ($thing->player !== null) {
                     $thing->reactiontime = 18;
                 }
-                $this->sound->play('telept');
+                $thing->angle = $dest->angle;
+                $thing->momx = $thing->momy = $thing->momz = 0;
                 return;
             }
         }

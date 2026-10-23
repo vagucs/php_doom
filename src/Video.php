@@ -1,6 +1,6 @@
 <?php
 /**
- * DOOM generic portado de Harbour para PHP CLI com SDL2.
+ * DOOM generic portado de Harbour para PHP CLI com SDL3.
  *
  * Por Wagner Nunes da Silva
  *
@@ -17,7 +17,7 @@ namespace Doom;
 use FFI;
 use Throwable;
 
-/** SDL2 video + audio (doomgeneric / i_video) via PHP FFI. */
+/** SDL3 video + audio (doomgeneric / i_video) via PHP FFI. */
 final class Video
 {
     public const SCALE_MIN = 1;
@@ -26,11 +26,9 @@ final class Video
     private const SDL_INIT_VIDEO = 0x00000020;
     private const SDL_INIT_EVENTS = 0x00004000;
     private const SDL_WINDOWPOS_CENTERED = 0x2FFF0000;
-    private const SDL_WINDOW_SHOWN = 0x00000004;
-    private const SDL_WINDOW_RESIZABLE = 0x00000020;
-    private const SDL_WINDOW_FULLSCREEN_DESKTOP = 0x00001001;
-    private const SDL_RENDERER_ACCELERATED = 0x00000002;
-    private const SDL_RENDERER_PRESENTVSYNC = 0x00000004;
+    private const SDL_WINDOW_RESIZABLE = 0x20;
+    private const SDL_SCALEMODE_NEAREST = 0;
+    private const SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK = 0xFFFFFFFF;
     /** SDL_PIXELFORMAT_ARGB8888 — packed 32-bit, works on Windows D3D (RGB24 looked palettized). */
     private const SDL_PIXELFORMAT_ARGB8888 = 0x16362004;
     private const SDL_TEXTUREACCESS_STREAMING = 1;
@@ -41,7 +39,7 @@ final class Video
     private const SDL_MOUSEBUTTONDOWN = 0x401;
     private const SDL_MOUSEBUTTONUP = 0x402;
     private const SDL_BUTTON_LEFT = 1;
-    private const AUDIO_S16LSB = 0x8010;
+    private const AUDIO_S16LE = 0x8010;
 
     /** @var array<int,int> 320x200 PLAYPAL indices */
     public array $fb = [];
@@ -55,12 +53,15 @@ final class Video
     private mixed $window = null;
     private mixed $renderer = null;
     private mixed $texture = null;
-    private mixed $audioDev = 0;
+    private mixed $audio = null;
     /** @var array<int,array{0:int,1:int,2:int}> */
     private array $palette = [];
     public int $fpsValue = 0;
+    public int $fpsAvg = 0;
     private int $fpsFrames = 0;
+    private int $fpsTotal = 0;
     private int $fpsStamp = 0;
+    private int $fpsStart = 0;
     /** @var list<int> remaining mixed s16 samples */
     private array $mix = [];
     private bool $mouseGrab = false;
@@ -76,13 +77,14 @@ final class Video
         $this->windowTitle = $title;
         $this->sdl = FFI::cdef(self::cdef(), self::libraryPath());
         $flags = self::SDL_INIT_VIDEO | self::SDL_INIT_EVENTS | self::SDL_INIT_AUDIO;
-        if ($this->sdl->SDL_Init($flags) !== 0) {
+        if (!$this->sdl->SDL_Init($flags)) {
             throw new \RuntimeException('SDL_Init: ' . $this->error());
         }
-        $this->sdl->SDL_ShowCursor(0);
         $this->applyMode();
+        $this->sdl->SDL_HideCursor();
         $this->openAudio();
         $this->fpsStamp = $this->ticksMs();
+        $this->fpsStart = $this->fpsStamp;
     }
 
     public function ticksMs(): int
@@ -96,8 +98,14 @@ final class Video
             return;
         }
         $this->mouseGrab = $on;
-        $this->sdl->SDL_SetRelativeMouseMode($on ? 1 : 0);
-        $this->sdl->SDL_ShowCursor($on ? 0 : 1);
+        if ($this->window !== null) {
+            $this->sdl->SDL_SetWindowRelativeMouseMode($this->window, $on);
+        }
+        if ($on) {
+            $this->sdl->SDL_HideCursor();
+        } else {
+            $this->sdl->SDL_ShowCursor();
+        }
     }
 
     public function toggleFullscreen(): void
@@ -134,7 +142,7 @@ final class Video
 
     public function playSfx(string $pcm, int $volume = 8): void
     {
-        if ($pcm === '' || $this->sdl === null || $this->audioDev === 0) {
+        if ($pcm === '' || $this->sdl === null || $this->audio === null) {
             return;
         }
         $gain = max(0, min(15, $volume)) / 15.0;
@@ -180,17 +188,25 @@ final class Video
         }
         $this->sdl->SDL_UpdateTexture($this->texture, null, $pixels, Defs::SCREENWIDTH * 4);
         $this->sdl->SDL_RenderClear($this->renderer);
-        $this->sdl->SDL_RenderCopy($this->renderer, $this->texture, null, null);
+        $this->sdl->SDL_RenderTexture($this->renderer, $this->texture, null, null);
         $this->sdl->SDL_RenderPresent($this->renderer);
         ++$this->fpsFrames;
         $now = $this->ticksMs();
         if ($now - $this->fpsStamp >= 1000) {
             $this->fpsValue = $this->fpsFrames;
+            $this->fpsTotal += $this->fpsFrames;
+            $span = $now - $this->fpsStart;
+            if ($span > 0) {
+                $this->fpsAvg = intdiv($this->fpsTotal * 1000, $span);
+            }
             $this->fpsFrames = 0;
             $this->fpsStamp = $now;
         }
         if ($this->showFps) {
-            $this->sdl->SDL_SetWindowTitle($this->window, $this->windowTitle . ' - ' . $this->fpsValue . ' FPS');
+            $this->sdl->SDL_SetWindowTitle(
+                $this->window,
+                $this->windowTitle . ' - ' . $this->fpsValue . ' FPS  ' . $this->fpsAvg . ' AVG'
+            );
         }
     }
 
@@ -226,8 +242,8 @@ final class Video
             if ($type !== self::SDL_KEYDOWN && $type !== self::SDL_KEYUP) {
                 continue;
             }
-            $sym = (int) $event->key->keysym->sym;
-            $scan = (int) $event->key->keysym->scancode;
+            $sym = (int) $event->key->key;
+            $scan = (int) $event->key->scancode;
             // Physical -/=/+ even on ABNT2 (SDL may send SDLK_PLUS=43, not EQUALS).
             if ($scan === 45 || $scan === 86) {
                 $sym = $scan === 86 ? Keys::KP_MINUS : Keys::MINUS;
@@ -249,7 +265,7 @@ final class Video
                 'key' => $sym,
                 'sym' => $sym,
                 'repeat' => $repeat,
-                'mod' => (int) $event->key->keysym->mod,
+                'mod' => (int) $event->key->mod,
                 'text' => $text,
             ];
         }
@@ -261,9 +277,9 @@ final class Video
         if ($this->sdl === null) {
             return;
         }
-        if ($this->audioDev) {
-            $this->sdl->SDL_CloseAudioDevice($this->audioDev);
-            $this->audioDev = 0;
+        if ($this->audio !== null) {
+            $this->sdl->SDL_DestroyAudioStream($this->audio);
+            $this->audio = null;
         }
         if ($this->texture !== null) {
             $this->sdl->SDL_DestroyTexture($this->texture);
@@ -291,26 +307,18 @@ final class Video
         if ($this->window === null) {
             $this->window = $this->sdl->SDL_CreateWindow(
                 $this->windowTitle,
-                self::SDL_WINDOWPOS_CENTERED,
-                self::SDL_WINDOWPOS_CENTERED,
                 $w,
                 $h,
-                self::SDL_WINDOW_SHOWN | self::SDL_WINDOW_RESIZABLE
+                self::SDL_WINDOW_RESIZABLE
             );
             if ($this->window === null) {
                 throw new \RuntimeException('SDL_CreateWindow: ' . $this->error());
             }
-            $this->renderer = $this->sdl->SDL_CreateRenderer(
-                $this->window,
-                -1,
-                self::SDL_RENDERER_ACCELERATED | self::SDL_RENDERER_PRESENTVSYNC
-            );
-            if ($this->renderer === null) {
-                $this->renderer = $this->sdl->SDL_CreateRenderer($this->window, -1, 0);
-            }
+            $this->renderer = $this->sdl->SDL_CreateRenderer($this->window, null);
             if ($this->renderer === null) {
                 throw new \RuntimeException('SDL_CreateRenderer: ' . $this->error());
             }
+            $this->sdl->SDL_SetRenderVSync($this->renderer, 1);
             $this->texture = $this->sdl->SDL_CreateTexture(
                 $this->renderer,
                 self::SDL_PIXELFORMAT_ARGB8888,
@@ -321,11 +329,9 @@ final class Video
             if ($this->texture === null) {
                 throw new \RuntimeException('SDL_CreateTexture: ' . $this->error());
             }
+            $this->sdl->SDL_SetTextureScaleMode($this->texture, self::SDL_SCALEMODE_NEAREST);
         }
-        $this->sdl->SDL_SetWindowFullscreen(
-            $this->window,
-            $this->fullscreen ? self::SDL_WINDOW_FULLSCREEN_DESKTOP : 0
-        );
+        $this->sdl->SDL_SetWindowFullscreen($this->window, $this->fullscreen);
         if (!$this->fullscreen) {
             $this->sdl->SDL_SetWindowSize($this->window, $w, $h);
             $this->sdl->SDL_SetWindowPosition(
@@ -344,29 +350,30 @@ final class Video
         }
         try {
             $want = $this->sdl->new('SDL_AudioSpec');
-            $have = $this->sdl->new('SDL_AudioSpec');
-            $want->freq = 11025;
-            $want->format = self::AUDIO_S16LSB;
+            $want->format = self::AUDIO_S16LE;
             $want->channels = 1;
-            $want->samples = 512;
-            $want->callback = null;
-            $want->userdata = null;
-            $dev = $this->sdl->SDL_OpenAudioDevice(null, 0, FFI::addr($want), FFI::addr($have), 0);
-            if ($dev) {
-                $this->audioDev = $dev;
-                $this->sdl->SDL_PauseAudioDevice($dev, 0);
+            $want->freq = 11025;
+            $stream = $this->sdl->SDL_OpenAudioDeviceStream(
+                self::SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
+                FFI::addr($want),
+                null,
+                null
+            );
+            if ($stream !== null) {
+                $this->audio = $stream;
+                $this->sdl->SDL_ResumeAudioStreamDevice($stream);
             }
         } catch (Throwable) {
-            $this->audioDev = 0;
+            $this->audio = null;
         }
     }
 
     private function pumpAudio(): void
     {
-        if ($this->sdl === null || $this->audioDev === 0 || $this->mix === []) {
+        if ($this->sdl === null || $this->audio === null || $this->mix === []) {
             return;
         }
-        $queued = (int) $this->sdl->SDL_GetQueuedAudioSize($this->audioDev);
+        $queued = (int) $this->sdl->SDL_GetAudioStreamQueued($this->audio);
         // 16-bit mono at 11025 Hz. Three device periods (~139 ms). A 1 s
         // backlog is what made shots and doors land late next to Harbour.
         $limit = 512 * 2 * 3;
@@ -385,7 +392,7 @@ final class Video
         $len = strlen($pcm);
         $buf = $this->sdl->new('uint8_t[' . $len . ']');
         FFI::memcpy($buf, $pcm, $len);
-        $this->sdl->SDL_QueueAudio($this->audioDev, $buf, $len);
+        $this->sdl->SDL_PutAudioStreamData($this->audio, $buf, $len);
     }
 
     private function error(): string
@@ -399,17 +406,19 @@ final class Video
 
     private static function libraryPath(): string
     {
-        $env = getenv('SDL2_PATH');
+        $env = getenv('SDL3_PATH');
         if (is_string($env) && $env !== '' && is_file($env)) {
             return $env;
         }
         $root = dirname(__DIR__);
+        $bits = PHP_INT_SIZE === 8 ? 'x64' : 'x86';
         $candidates = [
-            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'SDL2.dll',
-            $root . DIRECTORY_SEPARATOR . 'SDL2.dll',
-            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'libSDL2.so',
-            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'libSDL2.so.0',
-            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'libSDL2.dylib',
+            $root . DIRECTORY_SEPARATOR . 'sdl3' . DIRECTORY_SEPARATOR . 'SDL3-3.4.18-win32-' . $bits . DIRECTORY_SEPARATOR . 'SDL3.dll',
+            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'SDL3.dll',
+            $root . DIRECTORY_SEPARATOR . 'SDL3.dll',
+            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'libSDL3.so',
+            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'libSDL3.so.0',
+            $root . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'libSDL3.dylib',
         ];
         foreach ($candidates as $path) {
             if (is_file($path)) {
@@ -417,9 +426,9 @@ final class Video
             }
         }
         return match (PHP_OS_FAMILY) {
-            'Windows' => 'SDL2.dll',
-            'Darwin' => 'libSDL2.dylib',
-            default => 'libSDL2.so.0',
+            'Windows' => 'SDL3.dll',
+            'Darwin' => 'libSDL3.dylib',
+            default => 'libSDL3.so.0',
         };
     }
 
@@ -430,79 +439,79 @@ typedef unsigned char Uint8;
 typedef unsigned short Uint16;
 typedef unsigned int Uint32;
 typedef int Sint32;
-typedef unsigned int SDL_AudioDeviceID;
+typedef uint64_t Uint64;
 
-int SDL_Init(Uint32 flags);
+bool SDL_Init(Uint32 flags);
 void SDL_Quit(void);
 const char *SDL_GetError(void);
-Uint32 SDL_GetTicks(void);
+Uint64 SDL_GetTicks(void);
 void SDL_Delay(Uint32 ms);
-int SDL_ShowCursor(int toggle);
-int SDL_SetRelativeMouseMode(int enabled);
-
 typedef struct SDL_Window SDL_Window;
 typedef struct SDL_Renderer SDL_Renderer;
 typedef struct SDL_Texture SDL_Texture;
 
-SDL_Window *SDL_CreateWindow(const char *title, int x, int y, int w, int h, Uint32 flags);
-void SDL_DestroyWindow(SDL_Window *window);
-int SDL_SetWindowFullscreen(SDL_Window *window, Uint32 flags);
-void SDL_SetWindowSize(SDL_Window *window, int w, int h);
-void SDL_SetWindowPosition(SDL_Window *window, int x, int y);
-void SDL_SetWindowTitle(SDL_Window *window, const char *title);
+bool SDL_ShowCursor(void);
+bool SDL_HideCursor(void);
+bool SDL_SetWindowRelativeMouseMode(SDL_Window *window, bool enabled);
 
-SDL_Renderer *SDL_CreateRenderer(SDL_Window *window, int index, Uint32 flags);
+SDL_Window *SDL_CreateWindow(const char *title, int w, int h, Uint64 flags);
+void SDL_DestroyWindow(SDL_Window *window);
+bool SDL_SetWindowFullscreen(SDL_Window *window, bool fullscreen);
+bool SDL_SetWindowSize(SDL_Window *window, int w, int h);
+bool SDL_SetWindowPosition(SDL_Window *window, int x, int y);
+bool SDL_SetWindowTitle(SDL_Window *window, const char *title);
+
+SDL_Renderer *SDL_CreateRenderer(SDL_Window *window, const char *name);
 void SDL_DestroyRenderer(SDL_Renderer *renderer);
-int SDL_RenderClear(SDL_Renderer *renderer);
-int SDL_RenderCopy(SDL_Renderer *renderer, SDL_Texture *texture, const void *srcrect, const void *dstrect);
-void SDL_RenderPresent(SDL_Renderer *renderer);
+bool SDL_SetRenderVSync(SDL_Renderer *renderer, int vsync);
+bool SDL_RenderClear(SDL_Renderer *renderer);
+bool SDL_RenderTexture(SDL_Renderer *renderer, SDL_Texture *texture, const void *srcrect, const void *dstrect);
+bool SDL_RenderPresent(SDL_Renderer *renderer);
 
 SDL_Texture *SDL_CreateTexture(SDL_Renderer *renderer, Uint32 format, int access, int w, int h);
 void SDL_DestroyTexture(SDL_Texture *texture);
-int SDL_UpdateTexture(SDL_Texture *texture, const void *rect, const void *pixels, int pitch);
-
-typedef struct SDL_Keysym {
-    int scancode;
-    Sint32 sym;
-    Uint16 mod;
-    Uint16 padding;
-    Uint32 unused;
-} SDL_Keysym;
+bool SDL_SetTextureScaleMode(SDL_Texture *texture, int scaleMode);
+bool SDL_UpdateTexture(SDL_Texture *texture, const void *rect, const void *pixels, int pitch);
 
 typedef struct SDL_KeyboardEvent {
     Uint32 type;
-    Uint32 timestamp;
+    Uint32 reserved;
+    Uint64 timestamp;
     Uint32 windowID;
-    Uint8 state;
-    Uint8 repeat;
-    Uint8 padding2;
-    Uint8 padding3;
-    SDL_Keysym keysym;
+    Uint32 which;
+    int scancode;
+    Uint32 key;
+    Uint16 mod;
+    Uint16 raw;
+    bool down;
+    bool repeat;
 } SDL_KeyboardEvent;
 
 typedef struct SDL_MouseMotionEvent {
     Uint32 type;
-    Uint32 timestamp;
+    Uint32 reserved;
+    Uint64 timestamp;
     Uint32 windowID;
     Uint32 which;
     Uint32 state;
-    Sint32 x;
-    Sint32 y;
-    Sint32 xrel;
-    Sint32 yrel;
+    float x;
+    float y;
+    float xrel;
+    float yrel;
 } SDL_MouseMotionEvent;
 
 typedef struct SDL_MouseButtonEvent {
     Uint32 type;
-    Uint32 timestamp;
+    Uint32 reserved;
+    Uint64 timestamp;
     Uint32 windowID;
     Uint32 which;
     Uint8 button;
-    Uint8 state;
+    bool down;
     Uint8 clicks;
-    Uint8 padding1;
-    Sint32 x;
-    Sint32 y;
+    Uint8 padding;
+    float x;
+    float y;
 } SDL_MouseButtonEvent;
 
 typedef union SDL_Event {
@@ -510,28 +519,23 @@ typedef union SDL_Event {
     SDL_KeyboardEvent key;
     SDL_MouseMotionEvent motion;
     SDL_MouseButtonEvent button;
-    Uint8 padding[56];
+    Uint8 padding[128];
 } SDL_Event;
 
-int SDL_PollEvent(SDL_Event *event);
+bool SDL_PollEvent(SDL_Event *event);
 
 typedef struct SDL_AudioSpec {
+    int format;
+    int channels;
     int freq;
-    Uint16 format;
-    Uint8 channels;
-    Uint8 silence;
-    Uint16 samples;
-    Uint16 padding;
-    Uint32 size;
-    void *callback;
-    void *userdata;
 } SDL_AudioSpec;
 
-SDL_AudioDeviceID SDL_OpenAudioDevice(const char *device, int iscapture, const SDL_AudioSpec *desired, SDL_AudioSpec *obtained, int allowed_changes);
-void SDL_PauseAudioDevice(SDL_AudioDeviceID dev, int pause_on);
-int SDL_QueueAudio(SDL_AudioDeviceID dev, const void *data, Uint32 len);
-Uint32 SDL_GetQueuedAudioSize(SDL_AudioDeviceID dev);
-void SDL_CloseAudioDevice(SDL_AudioDeviceID dev);
+typedef struct SDL_AudioStream SDL_AudioStream;
+SDL_AudioStream *SDL_OpenAudioDeviceStream(Uint32 devid, const SDL_AudioSpec *spec, void *callback, void *userdata);
+bool SDL_ResumeAudioStreamDevice(SDL_AudioStream *stream);
+bool SDL_PutAudioStreamData(SDL_AudioStream *stream, const void *buf, int len);
+int SDL_GetAudioStreamQueued(SDL_AudioStream *stream);
+void SDL_DestroyAudioStream(SDL_AudioStream *stream);
 C;
     }
 }

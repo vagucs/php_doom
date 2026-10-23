@@ -1,10 +1,10 @@
 # php_doom
 
-![DOOM rodando em PHP CLI com SDL2](screenshot/doom.png)
+![DOOM rodando em PHP CLI com SDL3](screenshot/doom.png)
 
 **Vídeo:** [DOOM rodando em PHP](https://youtu.be/aCOHFTD1D8M)
 
-DOOM generic portado de Harbour para **PHP 8.1+ CLI + SDL2** (FFI). Não é aplicação web.
+DOOM generic portado de Harbour para **PHP 8.1+ CLI + SDL3** (FFI). Não é aplicação web.
 
 Por **Wagner Nunes da Silva**
 
@@ -26,7 +26,7 @@ English version: [README.md](README.md)
 
 O motor do Chocolate Doom / doomgeneric foi traduzido para **Harbour** (`.prg` / `.ch`) com uma camada fina de C para Allegro 4.2.2. Esse trabalho está em [github.com/vagucs/harbour_doom](https://github.com/vagucs/harbour_doom). Este diretório é o **mesmo material de estudo**, em PHP:
 
-- Janela, teclas, PCM: **SDL2** via **FFI** do PHP (sem extensão PECL `sdl`, sem navegador, sem HTTP)
+- Janela, teclas, PCM: **SDL3** via **FFI** do PHP (sem extensão PECL `sdl`, sem navegador, sem HTTP)
 - Framebuffer: 320×200, 8 bits PLAYPAL, escalado na janela
 - Tic do jogo: 35 Hz (`TICRATE`), igual ao vanilla
 - Renderer: BSP, visplanes, `R_DrawColumn` / `R_DrawSpan`, ponto fixo 16.16 `fixedMul` / `fixedDiv`
@@ -48,13 +48,13 @@ O que não entra nesta árvore (o mesmo corte do `boot.prg` Harbour):
 
 Este projeto é, antes de tudo, um **material de estudo**. O DOOM (1993) é pequeno o bastante para ser lido de ponta a ponta e denso o bastante para ensinar engenharia de verdade: renderização por BSP, ponto fixo 16.16, laço por tics, sistema de arquivos WAD.
 
-O port Harbour ensinou a ler C com os olhos de outra linguagem. O port Python tirou o pré-processador e os arrays 1-based. O port PHP dá o passo seguinte: o jogo ainda roda num interpretador, mas a fronteira nativa é **FFI para SDL2**, não pygame e não Allegro.
+O port Harbour ensinou a ler C com os olhos de outra linguagem. O port Python tirou o pré-processador e os arrays 1-based. O port PHP dá o passo seguinte: o jogo ainda roda num interpretador, mas a fronteira nativa é **FFI para SDL3**, não pygame e não Allegro.
 
 O que o port pretende ensinar:
 
 - **Seis linguagens, um motor.** C (`base_c/` no harbour_doom) → Harbour ([harbour_doom](https://github.com/vagucs/harbour_doom)) → Python ([python_doom](https://github.com/vagucs/python_doom)) → PHP ([php_doom](https://github.com/vagucs/php_doom)) → TypeScript ([node_doom](https://github.com/vagucs/node_doom)) → Java ([java_doom](https://github.com/vagucs/java_doom)). Os mesmos nomes (`P_Thrust`, `R_DrawColumn`, `A_Look`) para abrir as versões lado a lado.
 - **O que os ponteiros faziam.** PHP usa objetos e arrays; wrap-around, ângulos BAM e overflow 16.16 ficam explícitos (`Compat::asU32`, `shar`, `fixedMul`) porque inteiros em PHP não estouram em 32 bits. Produtos que passam de `int` não podem ir para `intdiv()`.
-- **Onde um interpretador basta.** O jogo inteiro roda em PHP CLI. SDL2 só abre janela, lê teclado e enfileira PCM. FFI é a fronteira nativa, como o Allegro foi no Harbour.
+- **Onde um interpretador basta.** O jogo inteiro roda em PHP CLI. SDL3 só abre janela, lê teclado e enfileira PCM. FFI é a fronteira nativa, como o Allegro foi no Harbour.
 - **CLI, não HTTP.** `PHP_SAPI` precisa ser `cli`. Não há canvas no navegador nem servidor web.
 - **Modernização de legado.** Manter o comportamento idêntico, isolar a camada nativa, conferir contra o original.
 
@@ -86,7 +86,7 @@ A tabela abaixo é a mesma comparação em seis linguagens usada em todos os REA
 | estouro de 32 bits | `AsU32` / `AsInt32` | `as_u32` / `as_i32` | `Compat::asU32` / `asI32` | `asU32` / `asI32` | `int` já faz wrap |
 | `fixed_t` 16.16 | `FixedMul` / `FixedDiv` | `fixed_mul` / `fixed_div` | `Compat::fixedMul` / `fixedDiv` | `fixedMul` / `fixedDiv` (BigInt) | `fixedMul` / `fixedDiv` (`long`) |
 | framebuffer `byte *` | string Harbour | `bytearray` + LUT numpy | `array<int>` + SDL ARGB8888 | `Uint8Array` + SDL ARGB8888 | `int[]` + SDL ARGB8888 |
-| Allegro 4.2.2 | GTALLEG / llibg | pygame | SDL2 via FFI | SDL2 via koffi | SDL2 via JNA |
+| Allegro 4.2.2 | GTALLEG / llibg | pygame | SDL3 via FFI | SDL2 via koffi | SDL2 via JNA |
 | `Z_Malloc` | GC | GC | GC | GC | GC |
 | globais `PUBLIC` | `PUBLIC` / `MEMVAR` | campos em `Game` | campos públicos em `Game` | campos públicos em `Game` | campos públicos em `Game` |
 | 100+ arquivos `.prg` | 1:1 com o C | `doom/*.py` condensado | `src/*.php` condensado | `src/*.ts` condensado | `src/doom/*.java` condensado |
@@ -141,7 +141,7 @@ public static function thrust(Mobj $mo, int $angle, int $move): void
 | Camada | Este port | Harbour (`harbour_doom`) |
 |---|---|---|
 | Linguagem | PHP 8.1+ CLI (testado no 8.2.34) | Harbour / xHarbour |
-| Janela, teclas, PCM | SDL2 (FFI) | Allegro 4.2.2 + GTALLEG |
+| Janela, teclas, PCM | SDL3 (FFI) | Allegro 4.2.2 + GTALLEG |
 | Blit da paleta / CRT | laço PHP → `SDL_UpdateTexture` ARGB8888 | C em `doomgeneric_allegro.prg` |
 | MIDI (Windows) | winmm MCI (FFI) | Allegro MIDI / MCI |
 | IWAD | os mesmos lumps | os mesmos |
@@ -156,13 +156,13 @@ ffi.enable=true
 
 Opcional: `composer install` só para o autoload PSR-4. `src/autoload.php` funciona sem Composer.
 
-SDL2: coloque **SDL2.dll** (64 bits) em `lib/` no Windows, ou defina `SDL2_PATH`. Veja `lib/README.txt`.
+SDL3: a **SDL3.dll** de 64 bits está em `sdl3/SDL3-3.4.18-win32-x64/`. Os headers estão em `sdl3/include/`. `SDL3_PATH` troca a DLL.
 
 ---
 
 ## Desempenho
 
-Taxa típica de desenho no mesmo PC (320×200, janela, IWAD shareware). O jogo continua em 35 Hz (`TICRATE`); `-fps` mostra esse número.
+Taxa típica de desenho no mesmo PC (320×200, janela, IWAD shareware). O jogo continua em 35 Hz (`TICRATE`). `-fps` mostra o último segundo e a média desde que o contador ligou.
 
 | Port | FPS típico |
 |---|---|
@@ -176,7 +176,7 @@ Taxa típica de desenho no mesmo PC (320×200, janela, IWAD shareware). O jogo c
 
 ## Como rodar
 
-PHP 8.1+, FFI ligado, SDL2 no path (ou `php_doom/lib/SDL2.dll` no Windows). Neste diretório:
+PHP 8.1+, FFI ligado, e a DLL da SDL3 em `sdl3/` (64 bits neste Windows). Neste diretório:
 
 ```
 php doom.php
@@ -266,7 +266,7 @@ Digite no teclado durante o jogo; não precisa de Enter. No skill Nightmare só 
 |---|---|
 | `-fullscreen` | Começa em janela de tela cheia |
 | `-crt` | Visual de scanlines (família Harbour `-crt`). Fica nítido em escala 2× ou maior |
-| `-fps` | Mostra os quadros por segundo no HUD (canto superior direito) e no título da janela. **F11** liga/desliga |
+| `-fps` | Mostra o último segundo e a média (`40 FPS  28 AVG`) no HUD e no título da janela. **F11** liga/desliga |
 
 ### Jogo
 
@@ -284,7 +284,7 @@ Digite no teclado durante o jogo; não precisa de Enter. No skill Nightmare só 
 | `-nosound` | Desliga SFX e música |
 | `-nomusic` | Desliga só a música |
 
-`default.cfg` no diretório de trabalho guarda `mouse_sensitivity`, `sfx_volume`, `music_volume`, `show_messages`, `use_mouse`, `screenblocks`. Mouse virar/andar usa movimento relativo do SDL2 quando `use_mouse` está ligado. Saves continuam JSON (save binário vanilla não é usado).
+`default.cfg` no diretório de trabalho guarda `mouse_sensitivity`, `sfx_volume`, `music_volume`, `show_messages`, `use_mouse`, `screenblocks`. Mouse virar/andar usa movimento relativo da SDL3 quando `use_mouse` está ligado. Saves continuam JSON (save binário vanilla não é usado).
 
 Flags só do Harbour **não** implementadas aqui: `-videoc`, `-scaling`, `-gfxmode`, `-colors`, rede/CD/joystick.
 
@@ -298,7 +298,7 @@ run.bat              atalho Windows (flags -d do FFI + IWAD padrão)
 composer.json        PHP >=8.1, ext-ffi
 src/                 pacote do motor (namespace Doom)
 src/autoload.php     PSR-4 + aliases de classe (sem Composer)
-lib/                 coloque SDL2.dll / libSDL2 aqui
+sdl3/                SDL3.dll (32 e 64 bits) e include/
 screenshot/doom.png  screenshot do README
 docs/                QR codes de doação
 ```
@@ -310,7 +310,7 @@ docs/                QR codes de doação
 | `src/Bin.php` | leitores little-endian de WAD / mapa |
 | `src/Keys.php` | `doomkeys` / keycodes SDL |
 | `src/Wad.php` | `w_wad` |
-| `src/Video.php` | `i_video`, `doomgeneric_allegro` (SDL2 + `-crt`) |
+| `src/Video.php` | `i_video`, `doomgeneric_allegro` (SDL3 + `-crt`) |
 | `src/VVideo.php` | `v_video` |
 | `src/Tables.php` | `tables` |
 | `src/RData.php` | `r_data` |
@@ -342,7 +342,7 @@ docs/                QR codes de doação
 2. **Chocolate Doom / doomgeneric** — C portátil
 3. **[harbour_doom](https://github.com/vagucs/harbour_doom)** — Harbour + Allegro 4.2.2 (`Doom_hb.exe`)
 4. **[python_doom](https://github.com/vagucs/python_doom)** — Python + pygame
-5. **[php_doom](https://github.com/vagucs/php_doom)** — PHP 8 CLI + SDL2 FFI (esta árvore)
+5. **[php_doom](https://github.com/vagucs/php_doom)** — PHP 8 CLI + SDL3 FFI (esta árvore)
 6. **[node_doom](https://github.com/vagucs/node_doom)** — Node.js CLI + TypeScript + SDL2 (koffi)
 7. **[java_doom](https://github.com/vagucs/java_doom)** — Java 17 CLI + SDL2 (JNA)
 

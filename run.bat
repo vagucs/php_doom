@@ -10,8 +10,8 @@ if not exist "%PHP%" (
     exit /b 1
 )
 
-if not exist "lib\SDL2.dll" if not defined SDL2_PATH (
-    echo Aviso: coloque SDL2.dll em lib\  ^(64-bit, https://github.com/libsdl-org/SDL/releases^)
+if not exist "sdl3\SDL3-3.4.18-win32-x64\SDL3.dll" if not defined SDL3_PATH (
+    echo Aviso: SDL3.dll de 64 bits nao encontrada em sdl3\SDL3-3.4.18-win32-x64\
 )
 
 set "IWAD_ARGS=%*"

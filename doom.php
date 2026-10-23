@@ -1,6 +1,6 @@
 <?php
 /**
- * DOOM generic portado de Harbour para PHP CLI com SDL2.
+ * DOOM generic portado de Harbour para PHP CLI com SDL3.
  *
  * Por Wagner Nunes da Silva
  *

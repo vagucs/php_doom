@@ -335,6 +335,22 @@ final class Status
         }
     }
 
+    public function textWidth(string $text): int
+    {
+        $width = 0;
+        foreach (str_split(strtoupper($text)) as $ch) {
+            $index = ord($ch) - Defs::HU_FONTSTART;
+            $patch = $index >= 0 && $index < count($this->font) ? $this->font[$index] : null;
+            if ($patch === null) {
+                $width += 4;
+                continue;
+            }
+            [$w] = VVideo::patchSize($patch);
+            $width += $w;
+        }
+        return $width;
+    }
+
     /** @param array<int,int> $fb */
     public function drawText(array &$fb, int $x, int $y, string $text): void
     {

@@ -171,6 +171,26 @@ final class Renderer
     public array $drawsegs = [];
     private int $basexscale = 0;
     private int $baseyscale = 0;
+    /**
+     * Corner picks for R_CheckBBox, remapped from vanilla indices
+     * (TOP=0,BOTTOM=1,LEFT=2,RIGHT=3) into Defs (LEFT=0,RIGHT=1,BOTTOM=2,TOP=3).
+     *
+     * @var array<int,array{0:int,1:int,2:int,3:int}>
+     */
+    private const CHECKCOORD = [
+        [Defs::BOXRIGHT, Defs::BOXTOP, Defs::BOXLEFT, Defs::BOXBOTTOM],
+        [Defs::BOXRIGHT, Defs::BOXTOP, Defs::BOXLEFT, Defs::BOXTOP],
+        [Defs::BOXRIGHT, Defs::BOXBOTTOM, Defs::BOXLEFT, Defs::BOXTOP],
+        [0, 0, 0, 0],
+        [Defs::BOXLEFT, Defs::BOXTOP, Defs::BOXLEFT, Defs::BOXBOTTOM],
+        [0, 0, 0, 0],
+        [Defs::BOXRIGHT, Defs::BOXBOTTOM, Defs::BOXRIGHT, Defs::BOXTOP],
+        [0, 0, 0, 0],
+        [Defs::BOXLEFT, Defs::BOXTOP, Defs::BOXRIGHT, Defs::BOXBOTTOM],
+        [Defs::BOXLEFT, Defs::BOXBOTTOM, Defs::BOXRIGHT, Defs::BOXBOTTOM],
+        [Defs::BOXLEFT, Defs::BOXBOTTOM, Defs::BOXRIGHT, Defs::BOXTOP],
+        [0, 0, 0, 0],
+    ];
 
     public function __construct(mixed $resources)
     {
@@ -404,6 +424,9 @@ final class Renderer
         $this->fb =& $fb;
         $this->visplanes = [];
         $this->drawsegs = [];
+        // Same as R_SetupFrame: sprites are only projected for sectors
+        // marked with this frame's validcount during BSP traversal.
+        ++$world->validcount;
         $this->clearClip();
         if (!empty($world->nodes)) {
             $this->renderBspNode($world, $world->numnodes - 1);
@@ -491,13 +514,97 @@ final class Renderer
         $node = $world->nodes[$bspnum];
         $side = $this->pointOnSide($this->viewx, $this->viewy, $node);
         $this->renderBspNode($world, $node->children[$side]);
-        $this->renderBspNode($world, $node->children[$side ^ 1]);
+        // Harbour/vanilla: only descend the far child if its bbox is visible.
+        if ($this->checkBBox($node->bbox[$side ^ 1])) {
+            $this->renderBspNode($world, $node->children[$side ^ 1]);
+        }
+    }
+
+    /**
+     * R_CheckBBox: reject BSP children fully occluded by solidsegs / FOV.
+     *
+     * @param int[] $bspcoord
+     */
+    private function checkBBox(array $bspcoord): bool
+    {
+        if ($this->viewx <= $bspcoord[Defs::BOXLEFT]) {
+            $boxx = 0;
+        } elseif ($this->viewx < $bspcoord[Defs::BOXRIGHT]) {
+            $boxx = 1;
+        } else {
+            $boxx = 2;
+        }
+        if ($this->viewy >= $bspcoord[Defs::BOXTOP]) {
+            $boxy = 0;
+        } elseif ($this->viewy > $bspcoord[Defs::BOXBOTTOM]) {
+            $boxy = 1;
+        } else {
+            $boxy = 2;
+        }
+        $boxpos = ($boxy << 2) + $boxx;
+        if ($boxpos === 5) {
+            return true;
+        }
+        $c = self::CHECKCOORD[$boxpos];
+        $x1 = $bspcoord[$c[0]];
+        $y1 = $bspcoord[$c[1]];
+        $x2 = $bspcoord[$c[2]];
+        $y2 = $bspcoord[$c[3]];
+        $angle1 = Compat::asU32($this->pointToAngle($x1, $y1) - $this->viewangle);
+        $angle2 = Compat::asU32($this->pointToAngle($x2, $y2) - $this->viewangle);
+        $span = Compat::asU32($angle1 - $angle2);
+        if ($span >= Defs::ANG180) {
+            return true;
+        }
+        $tspan = Compat::asU32($angle1 + $this->clipangle);
+        if ($tspan > Compat::asU32(2 * $this->clipangle)) {
+            $tspan = Compat::asU32($tspan - 2 * $this->clipangle);
+            if ($tspan >= $span) {
+                return false;
+            }
+            $angle1 = $this->clipangle;
+        }
+        $tspan = Compat::asU32($this->clipangle - $angle2);
+        if ($tspan > Compat::asU32(2 * $this->clipangle)) {
+            $tspan = Compat::asU32($tspan - 2 * $this->clipangle);
+            if ($tspan >= $span) {
+                return false;
+            }
+            $angle2 = Compat::asU32(-$this->clipangle);
+        }
+        $mask = intdiv(Defs::FINEANGLES, 2) - 1;
+        $sx1 = $this->viewangletox[
+            Compat::ushr(Compat::asU32($angle1 + Defs::ANG90), Defs::ANGLETOFINESHIFT) & $mask
+        ];
+        $sx2 = $this->viewangletox[
+            Compat::ushr(Compat::asU32($angle2 + Defs::ANG90), Defs::ANGLETOFINESHIFT) & $mask
+        ];
+        if ($sx1 === $sx2) {
+            return false;
+        }
+        --$sx2;
+        $start = 0;
+        while ($start < $this->newend && $this->solidsegs[$start]->last < $sx2) {
+            ++$start;
+        }
+        if ($start >= $this->newend) {
+            return true;
+        }
+        if ($sx1 >= $this->solidsegs[$start]->first && $sx2 <= $this->solidsegs[$start]->last) {
+            return false;
+        }
+        return true;
     }
 
     private function subsector(mixed $world, int $num): void
     {
         $sub = $world->subsectors[$num];
         $this->frontsector = $sub->sector;
+        // Mark sector for this frame so sprites are only drawn from visited sectors
+        // (R_AddSprites / validcount), matching Harbour.
+        if ($this->frontsector->validcount !== $world->validcount) {
+            $this->frontsector->validcount = $world->validcount;
+        }
         $light = max(0, min(Defs::LIGHTLEVELS - 1, ($this->frontsector->lightlevel >> 4) + $this->extralight));
         $this->walllights = $this->scalelight[$light];
         $this->floorplane = $this->findPlane(

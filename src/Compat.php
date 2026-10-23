@@ -73,21 +73,13 @@ final class Compat
             return (($a ^ $b) < 0) ? -0x80000000 : 0x7FFFFFFF;
         }
 
-        return self::asI32(self::floorDiv($a << 16, $b));
+        // C integer division truncates toward zero, same as Harbour FixedDiv.
+        return self::asI32(intdiv($a << 16, $b));
     }
 
     public static function absFixed(int $n): int
     {
         $n = self::asI32($n);
         return $n < 0 ? -$n : $n;
-    }
-
-    private static function floorDiv(int $a, int $b): int
-    {
-        $q = intdiv($a, $b);
-        if (($a % $b) !== 0 && (($a < 0) !== ($b < 0))) {
-            --$q;
-        }
-        return $q;
     }
 }

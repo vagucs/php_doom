@@ -14,7 +14,7 @@ declare(strict_types=1);
 
 namespace Doom;
 
-/** finesine / finetangent / tantoangle (tables.c generated at runtime). */
+/** finesine / finetangent / tantoangle, os mesmos números de tables.prg. */
 final class Tables
 {
     /** @var array<int, int> */
@@ -32,34 +32,11 @@ final class Tables
             return;
         }
 
-        $sinCount = intdiv(Defs::FINEANGLES, 4) * 5;
-        for ($i = 0; $i < $sinCount; ++$i) {
-            $a = ($i + 0.5) * M_PI * 2.0 / Defs::FINEANGLES;
-            self::$finesine[$i] = (int) (Defs::FRACUNIT * sin($a));
-        }
-        self::$finecosine = array_slice(self::$finesine, intdiv(Defs::FINEANGLES, 4));
-
-        $tanCount = intdiv(Defs::FINEANGLES, 2);
-        for ($i = 0; $i < $tanCount; ++$i) {
-            $a = ($i - intdiv(Defs::FINEANGLES, 4) + 0.5) * M_PI * 2.0 / Defs::FINEANGLES;
-            $raw = Defs::FRACUNIT * tan($a);
-            if (!is_finite($raw)) {
-                $value = $a > 0.0 ? 0x7FFFFFFF : -0x7FFFFFFF;
-            } elseif ($raw > 0x7FFFFFFF) {
-                $value = 0x7FFFFFFF;
-            } elseif ($raw < -0x7FFFFFFF) {
-                $value = -0x7FFFFFFF;
-            } else {
-                $value = (int) $raw;
-            }
-            self::$finetangent[$i] = $value;
-        }
-
-        for ($i = 0; $i <= Defs::SLOPERANGE; ++$i) {
-            self::$tantoangle[$i] = Compat::asU32(
-                (int) (atan($i / Defs::SLOPERANGE) / (M_PI * 2.0) * 0xFFFFFFFF)
-            );
-        }
+        self::$finesine = TablesData::finesine();
+        self::$finetangent = TablesData::finetangent();
+        self::$tantoangle = TablesData::tantoangle();
+        $quarter = intdiv(Defs::FINEANGLES, 4);
+        self::$finecosine = array_slice(self::$finesine, $quarter, Defs::FINEANGLES);
     }
 
     public static function fineSin(int $angle): int
@@ -72,11 +49,8 @@ final class Tables
     public static function fineCos(int $angle): int
     {
         self::initTables();
-        $index = (
-            (Compat::asU32($angle) >> Defs::ANGLETOFINESHIFT)
-            + intdiv(Defs::FINEANGLES, 4)
-        ) & Defs::FINEMASK;
-        return self::$finesine[$index];
+        $index = (Compat::asU32($angle) >> Defs::ANGLETOFINESHIFT) & Defs::FINEMASK;
+        return self::$finesine[$index + intdiv(Defs::FINEANGLES, 4)];
     }
 
     public static function slopeDiv(int $num, int $den): int

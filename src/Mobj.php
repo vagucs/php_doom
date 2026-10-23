@@ -24,7 +24,8 @@ class Mobj
     public int $reactiontime = 0;
     public int $lastlook = 0;
     public ?Mobj $target = null;
-    public int $movedir = 8;
+    public ?Subsector $subsector = null;
+    public int $movedir = 0;
     public int $movecount = 0;
     public int $threshold = 0;
     public string $aiState = '';
@@ -70,7 +71,7 @@ class Mobj
         bool $alive = true,
         int $reactiontime = 0,
         ?Mobj $target = null,
-        int $movedir = 8,
+        int $movedir = 0,
         int $movecount = 0,
         string $aiState = '',
         int $frame = 0,
@@ -275,19 +276,55 @@ class Mobj
         return [$kills, $items];
     }
 
-    public static function giveAmmo(Player $p, int $ammo, int $num): bool
+    /** P_GiveAmmo: num is clip count; 0 means half a clip. */
+    public static function giveAmmo(Player $p, int $ammo, int $num, ?object $game = null): bool
     {
+        if ($ammo < 0 || $ammo > 3) {
+            return false;
+        }
         if ($p->ammo[$ammo] >= $p->maxammo[$ammo]) {
             return false;
         }
-        $p->ammo[$ammo] = min($p->maxammo[$ammo], $p->ammo[$ammo] + Player::CLIPAMMO[$ammo] * $num);
+        $old = $p->ammo[$ammo];
+        if ($num !== 0) {
+            $add = Player::CLIPAMMO[$ammo] * $num;
+        } else {
+            $add = intdiv(Player::CLIPAMMO[$ammo], 2);
+        }
+        $skill = $game->skill ?? Defs::SK_MEDIUM;
+        if ($skill === Defs::SK_BABY || $skill === Defs::SK_NIGHTMARE) {
+            $add *= 2;
+        }
+        $p->ammo[$ammo] = min($p->maxammo[$ammo], $p->ammo[$ammo] + $add);
+        if ($old !== 0) {
+            return true;
+        }
+        // Prefers a matching gun when ammo was empty (vanilla P_GiveAmmo).
+        if ($ammo === Defs::AM_CLIP && $p->readyweapon === Defs::WP_FIST) {
+            $p->pendingweapon = $p->weaponowned[Defs::WP_CHAINGUN] ? Defs::WP_CHAINGUN : Defs::WP_PISTOL;
+        } elseif ($ammo === Defs::AM_SHELL
+            && ($p->readyweapon === Defs::WP_FIST || $p->readyweapon === Defs::WP_PISTOL)
+            && $p->weaponowned[Defs::WP_SHOTGUN]) {
+            $p->pendingweapon = Defs::WP_SHOTGUN;
+        } elseif ($ammo === Defs::AM_CELL
+            && ($p->readyweapon === Defs::WP_FIST || $p->readyweapon === Defs::WP_PISTOL)
+            && $p->weaponowned[Defs::WP_PLASMA]) {
+            $p->pendingweapon = Defs::WP_PLASMA;
+        } elseif ($ammo === Defs::AM_MISL && $p->readyweapon === Defs::WP_FIST && $p->weaponowned[Defs::WP_MISSILE]) {
+            $p->pendingweapon = Defs::WP_MISSILE;
+        }
         return true;
     }
 
     public static function touchSpecial(object $game, self $special, self $toucher): void
     {
+        // P_TouchSpecialThing: reject if special is too high/low relative to toucher.
+        $delta = $special->z - $toucher->z;
+        if ($delta > $toucher->height || $delta < -8 * Defs::FRACUNIT) {
+            return;
+        }
         $p = $toucher->player;
-        if ($p === null || !$special->alive) {
+        if ($p === null || !$special->alive || $toucher->health <= 0) {
             return;
         }
         $pickup = self::infoTable()[$special->doomednum] ?? null;
@@ -357,34 +394,45 @@ class Mobj
             ];
             $p->setMessage($names[(int) $extra] ?? 'You picked up a key.');
         } elseif ($kind === 'weapon') {
+            // P_GiveWeapon: placed guns give 2 clips; MF_DROPPED gives 1.
             $w = (int) $extra;
-            $p->weaponowned[$w] = true;
-            if ($p->readyweapon !== $w) {
+            $dropped = ($special->flags & Defs::MF_DROPPED) !== 0;
+            $clips = $dropped ? 1 : 2;
+            $gaveAmmo = false;
+            $ammoMap = [
+                Defs::WP_SHOTGUN => Defs::AM_SHELL,
+                Defs::WP_SUPERSHOTGUN => Defs::AM_SHELL,
+                Defs::WP_CHAINGUN => Defs::AM_CLIP,
+                Defs::WP_MISSILE => Defs::AM_MISL,
+                Defs::WP_PLASMA => Defs::AM_CELL,
+                Defs::WP_BFG => Defs::AM_CELL,
+            ];
+            if (isset($ammoMap[$w])) {
+                $gaveAmmo = self::giveAmmo($p, $ammoMap[$w], $clips, $game);
+            }
+            $gaveWeapon = false;
+            if (!$p->weaponowned[$w]) {
+                $gaveWeapon = true;
+                $p->weaponowned[$w] = true;
                 $p->pendingweapon = $w;
             }
-            if (in_array($w, [Defs::WP_SHOTGUN, Defs::WP_SUPERSHOTGUN], true)) {
-                self::giveAmmo($p, Defs::AM_SHELL, 1);
-            } elseif ($w === Defs::WP_CHAINGUN) {
-                self::giveAmmo($p, Defs::AM_CLIP, 1);
-            } elseif ($w === Defs::WP_MISSILE) {
-                self::giveAmmo($p, Defs::AM_MISL, 1);
-            } elseif (in_array($w, [Defs::WP_PLASMA, Defs::WP_BFG], true)) {
-                self::giveAmmo($p, Defs::AM_CELL, 1);
+            $taken = $gaveWeapon || $gaveAmmo;
+            if ($taken) {
+                $names = [
+                    Defs::WP_SHOTGUN => 'You got the shotgun!',
+                    Defs::WP_SUPERSHOTGUN => 'You got the super shotgun!',
+                    Defs::WP_CHAINGUN => 'You got the chaingun!',
+                    Defs::WP_MISSILE => 'You got the rocket launcher!',
+                    Defs::WP_PLASMA => 'You got the plasma gun!',
+                    Defs::WP_BFG => 'You got the BFG9000!',
+                    Defs::WP_CHAINSAW => 'A chainsaw!  Find some meat!',
+                ];
+                $p->setMessage($names[$w] ?? 'You got a weapon!');
+                $game->startSound('wpnup');
             }
-            $names = [
-                Defs::WP_SHOTGUN => 'You got the shotgun!',
-                Defs::WP_SUPERSHOTGUN => 'You got the super shotgun!',
-                Defs::WP_CHAINGUN => 'You got the chaingun!',
-                Defs::WP_MISSILE => 'You got the rocket launcher!',
-                Defs::WP_PLASMA => 'You got the plasma gun!',
-                Defs::WP_BFG => 'You got the BFG9000!',
-                Defs::WP_CHAINSAW => 'A chainsaw!  Find some meat!',
-            ];
-            $p->setMessage($names[$w] ?? 'You got a weapon!');
-            $game->startSound('wpnup');
         } elseif ($kind === 'ammo') {
             [$ammo, $num] = $extra;
-            $taken = self::giveAmmo($p, $ammo, $num);
+            $taken = self::giveAmmo($p, $ammo, $num, $game);
             if ($taken) {
                 $p->setMessage('Picked up some ammo.');
             }
@@ -393,7 +441,7 @@ class Mobj
                 if ($p->maxammo[$i] < 400) {
                     $p->maxammo[$i] *= 2;
                 }
-                self::giveAmmo($p, $i, 1);
+                self::giveAmmo($p, $i, 1, $game);
             }
             $p->setMessage('You picked up a backpack full of ammo!');
         } elseif ($kind === 'item') {

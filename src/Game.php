@@ -72,6 +72,7 @@ final class Game
     private int $turnheld = 0;
     private ?string $titlePatch = null;
     private ?string $creditPatch = null;
+    private ?string $help2Patch = null;
     private ?string $pagePatch = null;
     private int $pageTic = 0;
     private int $demoSequence = -1;
@@ -90,10 +91,12 @@ final class Game
     public array $pwadFiles = [];
     private string $demoBuffer = '';
     private int $demoP = 0;
+    private bool $longtics = false;
     private const DEMOMARKER = 0x80;
+    private const DOOM_191_VERSION = 111;
     private int $palette = -1;
     private ?string $playpal = null;
-    private ?int $wipeState = Defs::GS_TITLE;
+    private int $wipeState = Defs::GS_TITLE;
     private int $nextMap = 1;
 
     public function __construct()
@@ -115,9 +118,9 @@ final class Game
         Mobj::touchSpecial($this, $special, $toucher);
     }
 
-    public function useSpecial(object $line, object $thing, int $side): void
+    public function useSpecial(object $line, object $thing, int $side): bool
     {
-        $this->specials?->useSpecial($line, $thing, $side);
+        return $this->specials?->useSpecial($line, $thing, $side) ?? false;
     }
 
     public function crossSpecial(object $line, int $side, object $thing): void
@@ -134,6 +137,13 @@ final class Game
     {
         if (!$target->alive || ($target->flags & Defs::MF_SHOOTABLE) === 0) {
             return;
+        }
+        if ($target->health <= 0) {
+            return;
+        }
+        // Harbour/vanilla P_DamageMobj: stop lost-soul charge mom before knockback thrust.
+        if ($target->flags & Defs::MF_SKULLFLY) {
+            $target->momx = $target->momy = $target->momz = 0;
         }
         if ($target->player !== null && $this->skill === Defs::SK_BABY) {
             $damage >>= 1;
@@ -178,8 +188,9 @@ final class Game
             if ($p->health <= 0) {
                 $p->health = 0;
                 $p->playerstate = Defs::PST_DEAD;
-                $target->alive = false;
-                $target->flags &= ~(Defs::MF_SOLID | Defs::MF_SHOOTABLE);
+                // P_KillMobj: death state + tic jitter (must consume P_Random).
+                Enemy::killMonster($target, $this, $source);
+                $target->flags &= ~Defs::MF_SOLID;
                 $this->startSound('pldeth');
             } else {
                 $this->startSound('plpain');
@@ -206,9 +217,20 @@ final class Game
             }
         }
         $target->reactiontime = 0;
-        if ($source !== null && $source !== $target && $target->player === null) {
+        if (
+            $source !== null
+            && $source !== $target
+            && $target->player === null
+            && ($target->threshold === 0 || $target->type === Info::MT_VILE)
+            && $source->type !== Info::MT_VILE
+        ) {
             $target->target = $source;
-            if ($target->istate === (int) $info[Info::MI_SPAWNSTATE] && (int) $info[Info::MI_SEESTATE]) {
+            $target->threshold = 100;
+            // p_inter.c: only spawnstate (not spawnstate+1).
+            if (
+                $target->istate === (int) $info[Info::MI_SPAWNSTATE]
+                && (int) $info[Info::MI_SEESTATE]
+            ) {
                 Thinker::setMobjState($target, (int) $info[Info::MI_SEESTATE], $this->world, $this);
             }
         }
@@ -224,8 +246,10 @@ final class Game
         $this->world = new World();
         $this->world->setupLevel($this->wad, $this->res, $this->episode, $this->mapn);
         $this->specials = new Specials($this->world, $this->res, $this->sound);
+        $this->specials->game = $this;
         $this->player = null;
         [$this->totalkills, $this->totalitems] = Mobj::spawnMapThings($this->world, $this->skill, $this);
+        $this->specials->spawnSpecials();
         if ($this->player === null) {
             throw new \RuntimeException('no player 1 start');
         }
@@ -236,6 +260,10 @@ final class Game
         $this->totalsecret = count(array_filter($this->world->sectors, static fn($s) => $s->special === 9));
         Thinker::applyFast($this);
         $this->leveltime = 0;
+        // Harbour G_DoLoadLevel: force melt when reloading while already in a level.
+        if ($this->wipeState === Defs::GS_LEVEL) {
+            $this->wipeState = -1;
+        }
         $this->gamestate = Defs::GS_LEVEL;
         $this->specials->exitRequested = false;
         $this->specials->secretExit = false;
@@ -266,6 +294,11 @@ final class Game
     private function commercial(): bool
     {
         return $this->wad->checkNumForName('MAP01') >= 0;
+    }
+
+    private function shareware(): bool
+    {
+        return !$this->commercial() && $this->wad->checkNumForName('E2M1') < 0;
     }
 
     public function completeLevel(): void
@@ -424,11 +457,19 @@ final class Game
                 }
                 break;
             case 4:
-                $this->pageTic = $this->commercial() ? Defs::TICRATE * 11 : 200;
+                // Harbour D_DoAdvanceDemo: commercial TITLEPIC; retail CREDIT; shareware HELP2.
                 $this->gamestate = Defs::GS_TITLE;
-                $this->pagePatch = $this->titlePatch;
                 if ($this->commercial()) {
+                    $this->pageTic = Defs::TICRATE * 11;
+                    $this->pagePatch = $this->titlePatch;
                     $this->sound->playTitleMusic();
+                } else {
+                    $this->pageTic = 200;
+                    if ($this->shareware()) {
+                        $this->pagePatch = $this->help2Patch ?? $this->creditPatch ?? $this->titlePatch;
+                    } else {
+                        $this->pagePatch = $this->creditPatch ?? $this->titlePatch;
+                    }
                 }
                 break;
             default:
@@ -443,23 +484,36 @@ final class Game
     private function playDemo(string $name): bool
     {
         $data = $this->loadDemoBytes($name);
-        if ($data === null || strlen($data) < 13) {
+        if ($data === null || strlen($data) < 4) {
             return false;
         }
         $this->demoBuffer = $data;
         $this->demoP = 0;
         $demoVersion = ord($data[$this->demoP++]);
+        $this->longtics = false;
         if ($demoVersion <= 4) {
             $this->demoP = 0;
+        } elseif ($demoVersion === self::DOOM_191_VERSION) {
+            $this->longtics = true;
+        }
+        if ($this->demoP + 3 > strlen($data)) {
+            return false;
         }
         $demoSkill = ord($data[$this->demoP++]);
         $demoEpisode = ord($data[$this->demoP++]);
         $demoMap = ord($data[$this->demoP++]);
-        $this->demoP += 5;
-        $this->demoP += 4;
-        if ($demoSkill <= 4) {
-            $this->skill = $demoSkill;
+        if ($demoVersion > 4) {
+            if ($this->demoP + 9 > strlen($data)) {
+                return false;
+            }
+            $this->demoP++;
+            $this->respawnparm = ord($data[$this->demoP++]) !== 0;
+            $this->fastparm = ord($data[$this->demoP++]) !== 0;
+            $this->nomonsters = ord($data[$this->demoP++]) !== 0;
+            $this->demoP++;
+            $this->demoP += 4;
         }
+        $this->skill = max(0, min(Defs::SK_NIGHTMARE, $demoSkill));
         if ($demoEpisode >= 1) {
             $this->episode = $demoEpisode;
         }
@@ -468,6 +522,8 @@ final class Game
         }
         $this->loadLevel(false);
         $this->demoPlayback = true;
+        $demo = strtolower($this->timedemoName ?? $this->playdemoName ?? $name);
+        @file_put_contents(__DIR__ . '/../_sync_' . $demo . '.log', '');
         if ($this->timingdemo) {
             $this->timedemoStart = $this->video->ticksMs();
             $this->gametic = 0;
@@ -502,6 +558,7 @@ final class Game
             . chr(0)
             . "\x01\x00\x00\x00";
         $this->demoP = strlen($this->demoBuffer);
+        $this->longtics = false;
         $this->demoRecording = true;
     }
 
@@ -568,14 +625,21 @@ final class Game
     private function readDemoTiccmd(): Ticcmd
     {
         $cmd = new Ticcmd();
-        if ($this->demoBuffer === '' || $this->demoP + 4 > strlen($this->demoBuffer)
+        $need = $this->longtics ? 5 : 4;
+        if ($this->demoBuffer === '' || $this->demoP + $need > strlen($this->demoBuffer)
             || ord($this->demoBuffer[$this->demoP]) === self::DEMOMARKER) {
             $this->checkDemoStatus();
             return $cmd;
         }
         $cmd->forwardmove = $this->demoSByte();
         $cmd->sidemove = $this->demoSByte();
-        $cmd->angleturn = ord($this->demoBuffer[$this->demoP++]) << 8;
+        if ($this->longtics) {
+            $low = ord($this->demoBuffer[$this->demoP++]);
+            $high = ord($this->demoBuffer[$this->demoP++]);
+            $cmd->angleturn = $low | ($high << 8);
+        } else {
+            $cmd->angleturn = ord($this->demoBuffer[$this->demoP++]) << 8;
+        }
         if ($cmd->angleturn >= 32768) {
             $cmd->angleturn -= 65536;
         }
@@ -649,20 +713,8 @@ final class Game
             $mx = (int) ($this->mouseX * $sens);
             $my = (int) ($this->mouseY * $sens);
             $cmd->forwardmove += $my;
-            if ($cmd->forwardmove > 127) {
-                $cmd->forwardmove = 127;
-            }
-            if ($cmd->forwardmove < -127) {
-                $cmd->forwardmove = -127;
-            }
             if ($strafe) {
                 $cmd->sidemove += $mx * 2;
-                if ($cmd->sidemove > 127) {
-                    $cmd->sidemove = 127;
-                }
-                if ($cmd->sidemove < -127) {
-                    $cmd->sidemove = -127;
-                }
             } else {
                 $cmd->angleturn -= $mx * 8;
             }
@@ -671,6 +723,18 @@ final class Game
             }
             $this->mouseX = 0;
             $this->mouseY = 0;
+        }
+        // MAXPLMOVE = forwardmove[1] (0x32); values above are turbo.
+        $maxMove = Player::FORWARDMOVE[1];
+        if ($cmd->forwardmove > $maxMove) {
+            $cmd->forwardmove = $maxMove;
+        } elseif ($cmd->forwardmove < -$maxMove) {
+            $cmd->forwardmove = -$maxMove;
+        }
+        if ($cmd->sidemove > $maxMove) {
+            $cmd->sidemove = $maxMove;
+        } elseif ($cmd->sidemove < -$maxMove) {
+            $cmd->sidemove = -$maxMove;
         }
         return $cmd;
     }
@@ -717,6 +781,9 @@ final class Game
         }
         if ($this->demoPlayback) {
             $this->player->cmd = $this->readDemoTiccmd();
+            if (!$this->demoPlayback) {
+                return;
+            }
         } elseif ($this->menu?->active) {
             $this->player->cmd = new Ticcmd();
         } else {
@@ -730,12 +797,24 @@ final class Game
             $this->loadLevel(false);
             return;
         }
-        Enemy::tickEnemies($this->world, $this);
-        $this->specials?->tick();
+        // Thinker order ≈ vanilla: map mobjs → lights (SpawnSpecials) → missiles → doors/plats.
+        Enemy::tickEnemies($this->world, $this, false);
+        if ($this->specials !== null) {
+            $this->specials->game = $this;
+            $this->specials->tickLightsEarly();
+        }
+        Enemy::tickEnemies($this->world, $this, true);
+        if ($this->specials !== null) {
+            $this->specials->game = $this;
+            $this->specials->tick();
+        }
         if ($this->specials?->exitRequested) {
             $this->startSound('swtchx');
             $this->completeLevel();
             return;
+        }
+        if ($this->demoPlayback) {
+            $this->syncDemo1Log();
         }
         ++$this->leveltime;
         $this->automap->ticker($this);
@@ -751,8 +830,14 @@ final class Game
             $this->video->present();
             return;
         }
+        // Harbour D_Display: wipe on gamestate change (also during demos). Skipping
+        // wipe while demoPlayback left wipeState stale and caused a fake
+        // death→death melt when the demo ended before doAdvanceDemo.
         $need = $this->forceWipe || $this->gamestate !== $this->wipeState;
         $this->forceWipe = false;
+        if ($need && $this->advancedemo && $this->gamestate === Defs::GS_LEVEL) {
+            $need = false;
+        }
         if ($need) {
             $this->wipe->captureStart($fb);
         }
@@ -765,7 +850,9 @@ final class Game
         }
         $this->menu?->draw($fb);
         if ($this->video->showFps && $this->status !== null) {
-            $this->status->drawText($fb, 250, 1, $this->video->fpsValue . ' FPS');
+            $text = $this->video->fpsValue . ' FPS  ' . $this->video->fpsAvg . ' AVG';
+            $x = Defs::SCREENWIDTH - $this->status->textWidth($text) - 2;
+            $this->status->drawText($fb, max(0, $x), 1, $text);
         }
         $this->applyPalette();
         $this->video->present();
@@ -851,15 +938,19 @@ final class Game
         if ($n < 0) {
             $n = $this->wad->checkNumForName('PISGA0');
         }
+        $weaponLight = null;
+        if ($this->player->mo !== null) {
+            $weaponLight = Collision::pointInSubsector($this->world, $this->player->mo->x, $this->player->mo->y)->sector->lightlevel;
+        }
         if ($n >= 0) {
-            Sprites::drawPsprite($this->renderer, $fb, $this->wad->cacheLumpNum($n), $x, $y);
+            Sprites::drawPsprite($this->renderer, $fb, $this->wad->cacheLumpNum($n), $x, $y, $weaponLight);
         }
         $flash = $this->player->flashTics > 0 ? $this->player->pspriteFlash : '';
         if ($flash === '' && $this->player->pspriteState === 'fire') {
             $flash = self::WEAPON_FIRE_PATCH[$this->player->readyweapon] ?? '';
         }
         if ($flash !== '' && ($n = $this->wad->checkNumForName($flash)) >= 0) {
-            Sprites::drawPsprite($this->renderer, $fb, $this->wad->cacheLumpNum($n), $x, $y);
+            Sprites::drawPsprite($this->renderer, $fb, $this->wad->cacheLumpNum($n), $x, $y, $weaponLight, true);
         }
     }
 
@@ -1188,6 +1279,9 @@ final class Game
             if ($game->wad->checkNumForName('CREDIT') >= 0) {
                 $game->creditPatch = $game->wad->cacheLumpName('CREDIT');
             }
+            if ($game->wad->checkNumForName('HELP2') >= 0) {
+                $game->help2Patch = $game->wad->cacheLumpName('HELP2');
+            }
             $game->pagePatch = $game->titlePatch;
             $game->status = new Status($game->wad);
             if ($game->recordName !== null) {
@@ -1335,4 +1429,30 @@ final class Game
         }
         throw new \RuntimeException('No IWAD found. Put doom1.wad in this folder or pass -iwad file.wad');
     }
+
+    /** Same fields as harbour_doom/sync_demo1.log for offline compare. */
+    private function syncDemo1Log(): void
+    {
+        $mo = $this->player?->mo;
+        if ($mo === null) {
+            return;
+        }
+        $n = 0;
+        $sx = 0;
+        foreach ($this->world->mobjs as $m) {
+            if (($m->flags & Defs::MF_COUNTKILL) !== 0 && $m->health > 0) {
+                $n++;
+                $sx += intdiv($m->x, 65536);
+            }
+        }
+        $line = $this->leveltime . ' ' . $this->player->health . ' ' . $this->player->armorpoints
+            . ' ' . intdiv($mo->x, 65536) . ' ' . intdiv($mo->y, 65536)
+            . ' ' . intdiv($mo->z, 65536) . ' ' . intdiv($mo->floorz, 65536)
+            . ' ' . $mo->momx . ' ' . $mo->momy . ' ' . $mo->angle
+            . ' ' . $n . ' ' . $sx . ' ' . Enemy::rngIndex()
+            . ' ' . $this->player->readyweapon . ' ' . $this->player->ammo[Defs::AM_MISL] . "\n";
+        $demo = strtolower($this->timedemoName ?? $this->playdemoName ?? 'demo1');
+        file_put_contents(__DIR__ . '/../_sync_' . $demo . '.log', $line, FILE_APPEND);
+    }
+
 }

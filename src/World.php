@@ -36,6 +36,9 @@ final class Sector
     public int $validcount = 0;
     public int $soundtraversed = 0;
     public ?object $soundtarget = null;
+    /** Blockmap extent for P_ChangeSector: [left, right, bottom, top] block indices. */
+    /** @var int[] */
+    public array $blockbox = [0, 0, 0, 0];
 }
 
 final class Side
@@ -157,6 +160,58 @@ final class World
         $this->numnodes = count($this->nodes);
         foreach ($this->subsectors as $ss) {
             $ss->sector = $this->segs[$ss->firstline]->frontsector;
+        }
+        $this->groupLinesBlockboxes();
+    }
+
+    /** P_GroupLines blockbox: which mapblocks a sector overlaps (with MAXRADIUS pad). */
+    private function groupLinesBlockboxes(): void
+    {
+        if ($this->bmapwidth <= 0 || $this->bmapheight <= 0) {
+            return;
+        }
+        foreach ($this->sectors as $sector) {
+            $left = PHP_INT_MAX;
+            $right = PHP_INT_MIN;
+            $bottom = PHP_INT_MAX;
+            $top = PHP_INT_MIN;
+            foreach ($sector->lines as $li) {
+                if ($li->v1 === null || $li->v2 === null) {
+                    continue;
+                }
+                $left = min($left, $li->v1->x, $li->v2->x);
+                $right = max($right, $li->v1->x, $li->v2->x);
+                $bottom = min($bottom, $li->v1->y, $li->v2->y);
+                $top = max($top, $li->v1->y, $li->v2->y);
+            }
+            if ($left === PHP_INT_MAX) {
+                $sector->blockbox = [0, 0, 0, 0];
+                continue;
+            }
+            $sector->soundorg = (object) [
+                'x' => intdiv($right + $left, 2),
+                'y' => intdiv($top + $bottom, 2),
+            ];
+            $block = Compat::shar($top - $this->bmaporgy + Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            if ($block >= $this->bmapheight) {
+                $block = $this->bmapheight - 1;
+            }
+            $boxtop = max(0, $block);
+            $block = Compat::shar($bottom - $this->bmaporgy - Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            $boxbottom = max(0, $block);
+            $block = Compat::shar($right - $this->bmaporgx + Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            if ($block >= $this->bmapwidth) {
+                $block = $this->bmapwidth - 1;
+            }
+            $boxright = max(0, $block);
+            $block = Compat::shar($left - $this->bmaporgx - Defs::MAXRADIUS, Defs::MAPBLOCKSHIFT);
+            $boxleft = max(0, $block);
+            $sector->blockbox = [
+                Defs::BOXLEFT => $boxleft,
+                Defs::BOXRIGHT => $boxright,
+                Defs::BOXBOTTOM => $boxbottom,
+                Defs::BOXTOP => $boxtop,
+            ];
         }
     }
 
@@ -285,11 +340,17 @@ final class World
             $p = $o + 8;
             $nd->bbox = [];
             for ($child = 0; $child < 2; ++$child, $p += 8) {
+                // WAD order is BOXTOP, BOXBOTTOM, BOXLEFT, BOXRIGHT (vanilla).
+                // Remap into Defs indices used elsewhere (LEFT,RIGHT,BOTTOM,TOP).
+                $top = Bin::i16($data, $p) * Defs::FRACUNIT;
+                $bottom = Bin::i16($data, $p + 2) * Defs::FRACUNIT;
+                $left = Bin::i16($data, $p + 4) * Defs::FRACUNIT;
+                $right = Bin::i16($data, $p + 6) * Defs::FRACUNIT;
                 $nd->bbox[] = [
-                    Bin::i16($data, $p) * Defs::FRACUNIT,
-                    Bin::i16($data, $p + 2) * Defs::FRACUNIT,
-                    Bin::i16($data, $p + 4) * Defs::FRACUNIT,
-                    Bin::i16($data, $p + 6) * Defs::FRACUNIT,
+                    Defs::BOXLEFT => $left,
+                    Defs::BOXRIGHT => $right,
+                    Defs::BOXBOTTOM => $bottom,
+                    Defs::BOXTOP => $top,
                 ];
             }
             $nd->children = [Bin::u16($data, $p), Bin::u16($data, $p + 2)];
